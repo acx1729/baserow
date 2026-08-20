@@ -768,6 +768,7 @@ class TableHandler(metaclass=baserow_trace_methods(tracer)):
             include_permission_data=True,
             reduce_disk_space_usage=False,
             is_duplicate=True,
+            exclude_sensitive_data=False,
         )
 
         serialized_tables = database_type.export_tables_serialized([table], config)
