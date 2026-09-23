@@ -2,6 +2,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
 from baserow.contrib.database.fields.models import Field
+from baserow.core.encryption.fields import EncryptedTextField
 from baserow.core.jobs.models import Job
 from baserow.core.mixins import (
     CreatedAndUpdatedOnMixin,
@@ -134,7 +135,7 @@ class ICalCalendarDataSync(DataSync):
 class PostgreSQLDataSync(DataSync):
     postgresql_host = models.CharField(max_length=255)
     postgresql_username = models.CharField(max_length=255)
-    postgresql_password = models.CharField(max_length=255)
+    postgresql_password = EncryptedTextField(max_length=255)
     postgresql_port = models.PositiveSmallIntegerField(default=5432)
     postgresql_database = models.CharField(max_length=255)
     postgresql_schema = models.CharField(max_length=255, default="public")

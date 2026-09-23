@@ -12,6 +12,7 @@ from baserow.core.action.registries import (
     render_action_type_description,
 )
 from baserow.core.encoders import JSONEncoderSupportingDataClasses
+from baserow.core.encryption.fields import EncryptedJSONField
 from baserow.core.jobs.models import Job
 from baserow.core.mixins import CreatedAndUpdatedOnMixin
 
@@ -40,7 +41,9 @@ class AuditLogEntry(CreatedAndUpdatedOnMixin, models.Model):
     action_uuid = models.CharField(max_length=36, null=True)
     action_type = models.TextField()
     action_timestamp = models.DateTimeField()
-    action_params = models.JSONField(
+    # Encrypted because the parameters of some actions contain secrets, like the
+    # URL of a webhook or the key of an MCP endpoint.
+    action_params = EncryptedJSONField(
         null=True, encoder=JSONEncoderSupportingDataClasses
     )
     action_command_type = models.CharField(

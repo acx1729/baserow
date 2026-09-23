@@ -13,6 +13,7 @@ from baserow.contrib.integrations.core.constants import (
     PERIODIC_INTERVAL_CHOICES,
     PERIODIC_TIMEZONE_DEFAULT,
 )
+from baserow.core.encryption.fields import EncryptedTextField
 from baserow.core.formula.field import FormulaField
 from baserow.core.integrations.models import Integration
 from baserow.core.services.models import Service
@@ -43,7 +44,7 @@ class SMTPIntegration(Integration):
         null=True,
         help_text="The SMTP username for authentication.",
     )
-    password = models.CharField(
+    password = EncryptedTextField(
         max_length=255,
         blank=True,
         null=True,

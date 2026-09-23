@@ -26,6 +26,7 @@ from .ai_provider.models import (
     AIProviderFeatureSetting,
     AIProviderModel,
 )
+from .encryption.fields import EncryptedJSONField, EncryptedTextField
 from .integrations.models import Integration
 from .mixins import (
     CreatedAndUpdatedOnMixin,
@@ -285,7 +286,8 @@ class Workspace(HierarchicalModelMixin, TrashableModelMixin, CreatedAndUpdatedOn
     seats_taken = models.IntegerField(null=True)
     seats_taken_updated_at = models.DateTimeField(null=True)
     now = models.DateTimeField(null=True)
-    generative_ai_models_settings = models.JSONField(default=dict, null=True)
+    # Encrypted because it contains the API keys of the generative AI providers.
+    generative_ai_models_settings = EncryptedJSONField(default=dict, null=True)
 
     def get_parent(self):
         return None
@@ -866,7 +868,9 @@ class ImportApplicationsJob(
 
 class ImportExportTrustedSource(models.Model):
     name = models.CharField(max_length=255, blank=True)
-    private_key = models.TextField(help_text="The private key used to sign the export.")
+    private_key = EncryptedTextField(
+        help_text="The private key used to sign the export."
+    )
     public_key = models.TextField(
         help_text="The public key used to verify the signature of the export."
     )

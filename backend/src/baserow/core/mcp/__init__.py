@@ -70,14 +70,18 @@ class BaserowMCPServer:
         return []
 
     async def get_endpoint(self):
+        from baserow.core.encryption.utils import get_by_lookup_hash
         from baserow.core.mcp.models import MCPEndpoint
         from baserow.core.subjects import UserSubjectType
 
         key = current_key.get()
         try:
-            endpoint = await MCPEndpoint.objects.select_related(
-                "user", "user__profile", "workspace"
-            ).aget(key=key)
+            endpoint = await sync_to_async(get_by_lookup_hash)(
+                MCPEndpoint.objects.select_related(
+                    "user", "user__profile", "workspace"
+                ),
+                key,
+            )
             # This call checks if the user is active, account is not deleted, and if it
             # belongs in the workspace. It's important to check this everytime an
             # operation is done because the permissions could have changed.

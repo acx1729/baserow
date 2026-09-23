@@ -1,6 +1,7 @@
 from django.db import models
 
 from baserow.core.auth_provider.models import AuthProviderModel
+from baserow.core.encryption.fields import EncryptedTextField
 
 
 class GoogleAuthProviderModel(AuthProviderModel):
@@ -11,7 +12,7 @@ class GoogleAuthProviderModel(AuthProviderModel):
         max_length=191,
         help_text="App ID, or consumer key",
     )
-    secret = models.CharField(
+    secret = EncryptedTextField(
         max_length=191,
         help_text="API secret, client secret, or consumer secret",
     )
@@ -25,7 +26,7 @@ class FacebookAuthProviderModel(AuthProviderModel):
         max_length=191,
         help_text="App ID, or consumer key",
     )
-    secret = models.CharField(
+    secret = EncryptedTextField(
         max_length=191,
         help_text="API secret, client secret, or consumer secret",
     )
@@ -39,7 +40,7 @@ class GitHubAuthProviderModel(AuthProviderModel):
         max_length=191,
         help_text="App ID, or consumer key",
     )
-    secret = models.CharField(
+    secret = EncryptedTextField(
         max_length=191,
         help_text="API secret, client secret, or consumer secret",
     )
@@ -54,7 +55,7 @@ class GitLabAuthProviderModel(AuthProviderModel):
         max_length=191,
         help_text="App ID, or consumer key",
     )
-    secret = models.CharField(
+    secret = EncryptedTextField(
         max_length=191,
         help_text="API secret, client secret, or consumer secret",
     )
@@ -69,7 +70,7 @@ class OpenIdConnectAuthProviderModelMixin(models.Model):
         max_length=191,
         help_text="App ID, or consumer key",
     )
-    secret = models.CharField(
+    secret = EncryptedTextField(
         max_length=191,
         help_text="API secret, client secret, or consumer secret",
     )

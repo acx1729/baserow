@@ -59,6 +59,8 @@ Baserow by following one the guides below:
   traces.
 * [Setup AI-assistant](installation/ai-assistant.md): A quick guide on how to setup the
   AI-assistant.
+* [Encryption at rest](installation/encryption-at-rest.md): How the secrets stored in the
+  database are encrypted, and how to protect the keys with HashiCorp Vault.
 
 ## Baserow Tutorials
 

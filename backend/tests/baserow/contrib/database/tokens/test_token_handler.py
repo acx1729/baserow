@@ -16,6 +16,7 @@ from baserow.contrib.database.tokens.exceptions import (
 )
 from baserow.contrib.database.tokens.handler import TokenHandler
 from baserow.contrib.database.tokens.models import Token, TokenPermission
+from baserow.core.encryption.handler import EncryptionHandler
 from baserow.core.exceptions import UserNotInWorkspace
 
 
@@ -84,7 +85,9 @@ def test_generate_token(data_fixture):
     assert handler.generate_unique_key(32) != handler.generate_unique_key(32)
 
     key = handler.generate_unique_key(32)
-    assert not Token.objects.filter(key=key).exists()
+    assert not Token.objects.filter(
+        key_hash=EncryptionHandler.hash_for_lookup(key)
+    ).exists()
 
     for char in string.ascii_letters + string.digits:
         data_fixture.create_token(key=char, user=user, workspace=workspace)

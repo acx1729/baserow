@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from django.db import models
 
 from baserow.contrib.database.models import Database
+from baserow.core.encryption.fields import EncryptedTextField
 from baserow.core.jobs.mixins import JobWithUserIpAddress
 from baserow.core.jobs.models import Job
 from baserow.core.models import Workspace
@@ -38,10 +39,10 @@ class AirtableImportJob(JobWithUserIpAddress, Job):
         db_default=False,
         help_text="If true, then the files are not downloaded and imported.",
     )
-    session = models.CharField(
+    session = EncryptedTextField(
         null=True,
         help_text="Optionally provide a session object that's used as authentication.",
     )
-    session_signature = models.CharField(
+    session_signature = EncryptedTextField(
         null=True, help_text="The matching session signature if a session is provided."
     )

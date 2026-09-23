@@ -1,6 +1,7 @@
 from django.contrib.contenttypes.models import ContentType
 from django.db import models
 
+from baserow.core.encryption.fields import EncryptedTextField
 from baserow.core.mixins import (
     CreatedAndUpdatedOnMixin,
     PolymorphicContentTypeMixin,
@@ -43,9 +44,10 @@ class TwoFactorAuthProviderModel(
 
 class TOTPAuthProviderModel(TwoFactorAuthProviderModel):
     enabled = models.BooleanField(default=False)
-    secret = models.CharField(max_length=32, help_text="base32 secret")
-    provisioning_url = models.CharField(max_length=255)
-    provisioning_qr_code = models.TextField(blank=True)
+    secret = EncryptedTextField(max_length=32, help_text="base32 secret")
+    # The provisioning URL and QR code contain the secret until 2fa is enabled.
+    provisioning_url = EncryptedTextField(max_length=255)
+    provisioning_qr_code = EncryptedTextField(blank=True)
 
     @property
     def backup_codes(self):

@@ -16,6 +16,8 @@ from baserow.contrib.database.tokens.constants import (
     TOKEN_OPERATION_TYPES,
     TOKEN_TO_OPERATION_MAP,
 )
+from baserow.core.encryption.handler import EncryptionHandler
+from baserow.core.encryption.utils import get_by_lookup_hash
 from baserow.core.handler import CoreHandler
 from baserow.core.registries import object_scope_type_registry
 from baserow.core.telemetry.utils import baserow_trace_handler
@@ -55,10 +57,11 @@ class TokenHandler:
             return cached
 
         try:
-            token = (
-                Token.objects.select_related("workspace", "user__profile")
-                .defer("user__password")
-                .get(key=key)
+            token = get_by_lookup_hash(
+                Token.objects.select_related("workspace", "user__profile").defer(
+                    "user__password"
+                ),
+                key,
             )
         except Token.DoesNotExist:
             raise TokenDoesNotExist(f"The token with key {key} does not exist.")
@@ -127,7 +130,8 @@ class TokenHandler:
             i += 1
             token = random_string(length)
 
-            if not Token.objects.filter(key=token).exists():
+            key_hash = EncryptionHandler.hash_for_lookup(token)
+            if not Token.objects.filter(key_hash=key_hash).exists():
                 return token
 
     def create_token(self, user, workspace, name):

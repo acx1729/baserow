@@ -1,5 +1,6 @@
 from django.db import models
 
+from baserow.core.encryption.fields import EncryptedTextField
 from baserow.core.mixins import CreatedAndUpdatedOnMixin
 
 from .constants import (
@@ -42,7 +43,7 @@ class AIProviderConfig(CreatedAndUpdatedOnMixin, models.Model):
         related_name="ai_provider_configs",
     )
     provider_type = models.CharField(max_length=32)
-    api_key = models.CharField(max_length=512, blank=True, default="", db_default="")
+    api_key = EncryptedTextField(max_length=512, blank=True, default="", db_default="")
     extra_settings = models.JSONField(default=dict, blank=True, db_default={})
     is_active = models.BooleanField(default=True, db_default=True)
 
