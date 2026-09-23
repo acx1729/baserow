@@ -35,6 +35,10 @@ class HashiCorpVaultRequestError(KeyProviderError):
         self.status_code = status_code
 
 
+class HashiCorpVaultAuthenticationError(KeyProviderError):
+    """Raised when Baserow can't log in to HashiCorp Vault."""
+
+
 def get_vault_ciphertext_version(ciphertext: str) -> int:
     """
     Returns the version of the Transit key that produced a Vault ciphertext. Vault
@@ -236,9 +240,17 @@ class HashiCorpVaultClient:
                 "jwt": _read_secret_file(self.kubernetes_token_path),
             }
 
-        response = self._request(
-            "POST", f"auth/{self.auth_mount}/login", payload, authenticated=False
-        )
+        try:
+            response = self._request(
+                "POST", f"auth/{self.auth_mount}/login", payload, authenticated=False
+            )
+        except HashiCorpVaultRequestError as exc:
+            # Not a `HashiCorpVaultRequestError`, so that a rejected login isn't
+            # mistaken for a value that can't be decrypted.
+            raise HashiCorpVaultAuthenticationError(
+                f"Could not log in to HashiCorp Vault with the '{self.auth_method}' "
+                f"auth method: {exc}"
+            ) from exc
         auth = response["auth"]
         return auth["client_token"], auth.get("lease_duration") or None
 

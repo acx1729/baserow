@@ -285,7 +285,9 @@ class OAuth2AuthProviderMixin(BaseOAuth2AuthProviderMixin):
         if not is_sso_feature_active():
             return None
 
-        instances = self.model_class.objects.filter(enabled=True)
+        # The login options are public and don't need the secret, so it isn't loaded
+        # and decrypted.
+        instances = self.model_class.objects.filter(enabled=True).only("id", "name")
         if not instances:
             return None
 

@@ -1,4 +1,6 @@
+import copy
 import json
+import pickle
 
 from django.apps.registry import Apps
 from django.core import checks
@@ -10,9 +12,17 @@ import pytest
 from baserow.contrib.database.webhooks.models import TableWebhookHeader
 from baserow.contrib.integrations.core.models import SMTPIntegration
 from baserow.contrib.integrations.slack.models import SlackBotIntegration
-from baserow.core.encryption.fields import EncryptedJSONField, EncryptedTextField
-from baserow.core.encryption.handler import EncryptionHandler
-from baserow.core.models import Workspace
+from baserow.core.encryption.fields import (
+    EncryptedJSONField,
+    EncryptedStr,
+    EncryptedTextField,
+)
+from baserow.core.encryption.handler import (
+    EncryptionHandler,
+    forget_encryption_enabled,
+    is_encryption_enabled,
+)
+from baserow.core.models import Settings, Workspace
 
 
 @pytest.mark.django_db
@@ -144,3 +154,90 @@ def test_encrypted_fields_cannot_be_unique_or_indexed():
         ("baserow.encryption.E001", "indexed_secret"),
     ]
     assert all(isinstance(error, checks.Error) for error in errors)
+
+
+@pytest.mark.django_db
+def test_saving_an_unchanged_secret_keeps_the_stored_ciphertext(
+    data_fixture, stored_value
+):
+    integration = data_fixture.create_slack_bot_integration(token="xoxb-secret")
+    stored = stored_value(SlackBotIntegration, "token", integration.pk)
+
+    integration.refresh_from_db()
+    integration.name = "Renamed"
+    integration.save()
+    assert stored_value(SlackBotIntegration, "token", integration.pk) == stored
+
+    integration.token = "xoxb-changed"
+    integration.save()
+    changed = stored_value(SlackBotIntegration, "token", integration.pk)
+    assert changed != stored
+    assert EncryptionHandler().decrypt(changed) == "xoxb-changed"
+
+
+@pytest.mark.django_db
+def test_values_are_written_in_plain_text_until_encryption_is_enabled(
+    data_fixture, stored_value, encryption_at_rest_disabled
+):
+    """
+    The previous version, which keeps running during a rolling upgrade, must be able
+    to read everything the new version writes.
+    """
+
+    integration = data_fixture.create_slack_bot_integration(token="xoxb-secret")
+    workspace = data_fixture.create_workspace()
+    workspace.generative_ai_models_settings = {"openai": {"api_key": "sk-secret"}}
+    workspace.save()
+
+    assert stored_value(SlackBotIntegration, "token", integration.pk) == "xoxb-secret"
+    assert stored_value(Workspace, "generative_ai_models_settings", workspace.pk) == {
+        "openai": {"api_key": "sk-secret"}
+    }
+
+    integration.refresh_from_db()
+    integration.save()
+    assert stored_value(SlackBotIntegration, "token", integration.pk) == "xoxb-secret"
+
+
+@pytest.mark.django_db
+def test_encryption_enabled_is_read_from_the_settings(encryption_at_rest_disabled):
+    assert not is_encryption_enabled()
+
+    Settings.objects.update(encrypt_secrets_at_rest=True)
+    forget_encryption_enabled()
+    assert is_encryption_enabled()
+
+    # A new instance, before its settings are created, encrypts from the start.
+    Settings.objects.all().delete()
+    forget_encryption_enabled()
+    assert is_encryption_enabled()
+
+
+@pytest.mark.django_db
+def test_legacy_values_are_encrypted_when_saved_once_encryption_is_enabled(
+    data_fixture, stored_value, store_raw_value
+):
+    integration = data_fixture.create_slack_bot_integration()
+    store_raw_value(SlackBotIntegration, "token", integration.pk, "xoxb-legacy")
+
+    integration.refresh_from_db()
+    integration.save()
+
+    stored = stored_value(SlackBotIntegration, "token", integration.pk)
+    assert EncryptionHandler().decrypt(stored) == "xoxb-legacy"
+    assert stored != "xoxb-legacy"
+
+
+@pytest.mark.django_db
+def test_decrypted_values_are_pickled_and_copied_as_plain_strings(data_fixture):
+    integration = data_fixture.create_slack_bot_integration(token="xoxb-secret")
+    integration.refresh_from_db()
+
+    assert isinstance(integration.token, EncryptedStr)
+    for copied in [
+        pickle.loads(pickle.dumps(integration.token)),  # noqa: S301
+        copy.deepcopy(integration.token),
+        pickle.loads(pickle.dumps(integration)).token,  # noqa: S301
+    ]:
+        assert copied == "xoxb-secret"
+        assert type(copied) is str

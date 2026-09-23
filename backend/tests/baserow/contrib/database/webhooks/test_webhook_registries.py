@@ -3,6 +3,8 @@ from unittest.mock import patch
 import pytest
 
 from baserow.contrib.database.rows.handler import RowHandler
+from baserow.core.encryption.exceptions import DecryptionError
+from baserow.core.encryption.handler import EncryptionHandler
 
 
 @pytest.mark.django_db(transaction=True)
@@ -40,3 +42,28 @@ def test_signal_listener(mock_call_webhook, data_fixture):
         "event_type": "rows.created",
         "items": [{"id": 1, "order": "1.00000000000000000000"}],
     }
+
+
+@pytest.mark.django_db(transaction=True)
+@patch("baserow.contrib.database.webhooks.registries.call_webhook")
+def test_signal_listener_does_not_fail_when_the_webhooks_cannot_be_decrypted(
+    mock_call_webhook, data_fixture
+):
+    user = data_fixture.create_user()
+    table = data_fixture.create_database_table(user=user)
+    data_fixture.create_table_webhook(
+        user=user,
+        table=table,
+        url="http://localhost/",
+        headers={"Authorization": "Bearer secret"},
+    )
+
+    # For example because the key provider is unreachable. The row change is
+    # already committed when the webhooks are called, so it must not fail.
+    with patch.object(
+        EncryptionHandler, "decrypt", side_effect=DecryptionError("unavailable")
+    ):
+        row = RowHandler().create_row(user=user, table=table, values={})
+
+    assert row.id is not None
+    mock_call_webhook.delay.assert_not_called()

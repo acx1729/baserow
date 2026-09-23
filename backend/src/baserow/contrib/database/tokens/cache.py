@@ -13,7 +13,8 @@ _KEY_PREFIX = "db_token:"
 
 
 def _cache_key(token_key: str) -> str:
-    # Hash the token key so raw API tokens don't sit in Redis cache keys.
+    # Hash the token key so raw API tokens don't sit in Redis cache keys. The hash is
+    # the same as the `key_hash` of the token.
     digest = hashlib.sha256(token_key.encode("utf-8")).hexdigest()
     return f"{_KEY_PREFIX}{digest}"
 
@@ -51,3 +52,9 @@ def invalidate_cached_token(token_key: str) -> None:
     if settings.BASEROW_CACHE_TTL_SECONDS <= 0:
         return
     cache.delete(_cache_key(token_key))
+
+
+def invalidate_cached_token_by_hash(key_hash: str) -> None:
+    if settings.BASEROW_CACHE_TTL_SECONDS <= 0:
+        return
+    cache.delete(f"{_KEY_PREFIX}{key_hash}")

@@ -26,6 +26,7 @@ from baserow.contrib.builder.models import Builder
 from baserow.contrib.builder.pages.handler import PageHandler
 from baserow.contrib.builder.pages.models import Page
 from baserow.core.app_auth_providers.registries import app_auth_provider_type_registry
+from baserow.core.encryption.utils import defer_encrypted_fields
 from baserow.core.formula.serializers import FormulaSerializerField
 from baserow.core.services.registries import service_type_registry
 from baserow.core.user_sources.models import UserSource
@@ -193,6 +194,13 @@ class PublicPolymorphicAppAuthProviderSerializer(PolymorphicSerializer):
     base_class = AppAuthProviderSerializer
     registry = app_auth_provider_type_registry
     extra_params = {"public": True}
+
+    def to_representation(self, instance):
+        # The public representation never contains secrets, like the client secret,
+        # so they're not loaded and decrypted.
+        if not isinstance(instance, dict):
+            instance = instance.get_specific(enhance_queryset=defer_encrypted_fields)
+        return super().to_representation(instance)
 
 
 class BasePublicUserSourceSerializer(serializers.ModelSerializer):

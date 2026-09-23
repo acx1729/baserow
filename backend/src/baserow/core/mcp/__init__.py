@@ -79,7 +79,7 @@ class BaserowMCPServer:
             endpoint = await sync_to_async(get_by_lookup_hash)(
                 MCPEndpoint.objects.select_related(
                     "user", "user__profile", "workspace"
-                ),
+                ).defer("workspace__generative_ai_models_settings"),
                 key,
             )
             # This call checks if the user is active, account is not deleted, and if it

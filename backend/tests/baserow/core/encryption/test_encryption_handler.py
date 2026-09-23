@@ -9,6 +9,7 @@ import pytest
 from baserow.core.encryption.exceptions import (
     DecryptionError,
     EncryptionConfigurationError,
+    KeyProviderError,
 )
 from baserow.core.encryption.handler import (
     ENCRYPTED_VALUE_PREFIX,
@@ -16,6 +17,7 @@ from baserow.core.encryption.handler import (
     keyring,
 )
 from baserow.core.encryption.key_provider_types import (
+    LocalKeyProviderType,
     decode_encryption_key,
     generate_encryption_key,
 )
@@ -60,8 +62,10 @@ def test_decrypt_detects_tampering():
     header, payload = encrypted.rsplit(":", 1)
     raw = bytearray(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     raw[-1] ^= 1
-    tampered = f"{header}:{base64.urlsafe_b64encode(bytes(raw)).decode()}"
+    tampered_payload = base64.urlsafe_b64encode(bytes(raw)).decode().rstrip("=")
+    tampered = f"{header}:{tampered_payload}"
 
+    assert handler.is_encrypted(tampered)
     with pytest.raises(DecryptionError):
         handler.decrypt(tampered)
 
@@ -69,16 +73,43 @@ def test_decrypt_detects_tampering():
 @pytest.mark.parametrize(
     "value",
     [
+        "bxenc:",
+        "bxenc: this is a response header",
         "bxenc:1:local:not-enough-parts",
         "bxenc:2:local:abc:def",
-        "bxenc:1:unknown_provider:abc:def",
+        "bxenc:1:local:abc:def",
         "bxenc:1:local:!!!:def",
         "bxenc:1:lócal:abc:def",
     ],
 )
-def test_decrypt_rejects_malformed_values(value):
+def test_values_that_do_not_match_the_encrypted_format_are_plaintext(value):
+    """
+    A value stored before encryption was enabled can start with the prefix, e.g. a
+    webhook header, it's only decrypted when it fully matches the format.
+    """
+
+    handler = EncryptionHandler()
+
+    assert not handler.is_encrypted(value)
+    assert handler.decrypt(value) == value
+    assert handler.needs_reencryption(value)
+
+
+def test_values_matching_the_encrypted_format_must_decrypt():
+    handler = EncryptionHandler()
+    _, version, provider, wrapped_key, payload = handler.encrypt("secret").split(":")
+
+    unknown_provider = f"bxenc:{version}:unknown:{wrapped_key}:{payload}"
+    with pytest.raises(DecryptionError, match="unknown key provider"):
+        handler.decrypt(unknown_provider)
+
+    other_payload = handler.encrypt("other").split(":")[4]
+    wrong_payload = f"bxenc:{version}:{provider}:{wrapped_key}:{other_payload}"
+    assert handler.decrypt(wrong_payload) == "other"
+
+    garbage = base64.urlsafe_b64encode(b"x" * 40).decode().rstrip("=")
     with pytest.raises(DecryptionError):
-        EncryptionHandler().decrypt(value)
+        handler.decrypt(f"bxenc:{version}:{provider}:{wrapped_key}:{garbage}")
 
 
 def test_values_encrypted_without_dedicated_key_stay_readable_with_one():
@@ -184,6 +215,31 @@ def test_data_key_is_reused_until_it_expires():
     # don't need to be re-encrypted.
     assert handler.decrypt(first) == "a"
     assert not handler.needs_reencryption(first)
+
+
+def test_current_data_key_is_kept_when_the_key_provider_cannot_renew_it():
+    handler = EncryptionHandler()
+    first = handler.encrypt("a")
+
+    with (
+        patch("baserow.core.encryption.handler.DATA_KEY_MAX_AGE_SECONDS", -1),
+        patch.object(
+            LocalKeyProviderType,
+            "generate_data_key",
+            side_effect=KeyProviderError("unreachable"),
+        ),
+    ):
+        keyring.get_current_data_key()
+        # The expired data key keeps being used instead of failing.
+        second = handler.encrypt("b")
+
+        assert second.split(":")[3] == first.split(":")[3]
+        assert handler.decrypt(second) == "b"
+
+        # Without a data key yet, encrypting fails.
+        keyring.reset()
+        with pytest.raises(KeyProviderError):
+            handler.encrypt("c")
 
 
 def test_hash_for_lookup_is_the_sha256_of_the_value():

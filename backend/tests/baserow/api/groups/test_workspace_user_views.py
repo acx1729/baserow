@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from django.shortcuts import reverse
 
 import pytest
@@ -8,6 +10,8 @@ from rest_framework.status import (
     HTTP_404_NOT_FOUND,
 )
 
+from baserow.core.encryption.exceptions import DecryptionError
+from baserow.core.encryption.handler import EncryptionHandler
 from baserow.core.handler import CoreHandler
 from baserow.core.models import WorkspaceUser
 from baserow.core.trash.handler import TrashHandler
@@ -99,6 +103,34 @@ def test_list_workspace_users_2fa_enabled(api_client, data_fixture):
     assert response_json[0]["two_factor_auth"]["is_enabled"] is False
     assert response_json[1]["two_factor_auth"]["is_enabled"] is True
     assert response_json[2]["two_factor_auth"] == {}
+
+
+@pytest.mark.django_db
+def test_list_workspace_users_does_not_decrypt_2fa_secrets(api_client, data_fixture):
+    user_1, token_1 = data_fixture.create_user_and_token(email="test1@test.nl")
+    user_2, _ = data_fixture.create_user_and_token(email="test2@test.nl")
+    data_fixture.configure_totp(user_2)
+    workspace_1 = data_fixture.create_workspace()
+    data_fixture.create_user_workspace(
+        workspace=workspace_1, user=user_1, permissions="ADMIN"
+    )
+    data_fixture.create_user_workspace(
+        workspace=workspace_1, user=user_2, permissions="MEMBER"
+    )
+
+    # Only the type and state of 2fa are listed, the secrets aren't decrypted.
+    with patch.object(
+        EncryptionHandler, "decrypt", side_effect=DecryptionError("unavailable")
+    ):
+        response = api_client.get(
+            reverse(
+                "api:workspaces:users:list", kwargs={"workspace_id": workspace_1.id}
+            ),
+            HTTP_AUTHORIZATION=f"JWT {token_1}",
+        )
+
+    assert response.status_code == HTTP_200_OK
+    assert response.json()[1]["two_factor_auth"] == {"type": "totp", "is_enabled": True}
 
 
 @pytest.mark.django_db

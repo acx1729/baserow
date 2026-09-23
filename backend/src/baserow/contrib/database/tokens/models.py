@@ -28,7 +28,8 @@ class Token(
         max_length=100,
         help_text="The human readable name of the database token for the user.",
     )
-    # Encrypted at rest, use `key_hash` to find a token by key.
+    # Encrypted at rest, use `key_hash` to find a token by key. Only change the key
+    # with `save()`, which also updates `key_hash`.
     key = EncryptedTextField(
         max_length=32,
         help_text="The unique token key that can be used to authorize for the table "

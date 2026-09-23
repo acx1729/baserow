@@ -27,7 +27,8 @@ class MCPEndpoint(
         max_length=100,
         help_text="The human readable name of the MCP endpoint for the user.",
     )
-    # Encrypted at rest, use `key_hash` to find an endpoint by key.
+    # Encrypted at rest, use `key_hash` to find an endpoint by key. Only change the key
+    # with `save()`, which also updates `key_hash`.
     key = EncryptedTextField(
         max_length=32,
         help_text="The unique endpoint key that can be used to authorize for the MCP "

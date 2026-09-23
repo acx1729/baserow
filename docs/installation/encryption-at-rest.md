@@ -2,9 +2,10 @@
 
 Baserow encrypts the secrets it stores in its database, like API tokens, integration
 credentials and two-factor authentication secrets. A leaked database dump, backup or
-replica, or stolen database credentials, only expose ciphertext. The keys that protect
-it are never stored in the database: they're held by a key provider, which is either a
-key passed to Baserow or a key in [HashiCorp Vault](https://www.vaultproject.io/).
+replica, or someone reading the database with stolen credentials, only gets
+ciphertext. The keys that protect it are never stored in the database: they're held by
+a key provider, which is either a key passed to Baserow or a key in
+[HashiCorp Vault](https://www.vaultproject.io/).
 
 ## What is encrypted
 
@@ -28,6 +29,32 @@ with encryption of the database storage and backups (for example encrypted volum
 an encrypted managed database), and restrict who can access the database and restore
 its backups. Files uploaded by users are stored outside of the database, protect them
 with encryption of the storage bucket or volume.
+
+Some secrets also exist outside of these columns for a short time:
+
+- Redis holds the URL and headers of webhook calls that are waiting to be sent, in the
+  Celery queue and the webhook queue. Protect Redis with a password, TLS and encrypted
+  storage, or disable its persistence.
+- The undo history keeps the previous settings of recently changed objects, for example
+  the client secret of an application builder OpenID Connect provider, until it's
+  cleaned up after `MINUTES_UNTIL_ACTION_CLEANED_UP` (120 minutes by default).
+
+## What it doesn't protect against
+
+Encryption at rest protects the secrets from anyone who can read the database, but
+not from anyone who can use Baserow's keys or change what Baserow does:
+
+- **Write access to the database.** Someone who can change the database can, for
+  example, add themselves to a workspace or change a webhook URL, and let Baserow use
+  the secrets for them. Only give Baserow's database credentials to Baserow, restrict
+  the network access to the database, and use read-only credentials for reporting and
+  backups.
+- **Access to a running Baserow process or its configuration.** Baserow has to decrypt
+  the secrets to use them, so someone who can run code in Baserow, or read its memory
+  or environment variables, can decrypt them too. With HashiCorp Vault, revoking
+  Baserow's Vault identity stops that, and every data key that's unwrapped is recorded
+  in the Vault audit log.
+- **Data outside of the encrypted columns**, see above.
 
 ## How it works
 
@@ -177,26 +204,44 @@ Values that were encrypted with a local key stay readable after switching to Vau
 long as that key (or `SECRET_KEY`) is still configured. Run `./baserow encrypt_data`
 before removing it.
 
-Every process asks Vault for a new data key at most once per hour, and unwraps each
-data key it reads once. When Vault is unreachable, the processes keep working with the
-data keys they already have, but they can't generate or unwrap new ones.
+Every process asks Vault for a new data key at most once a day, and unwraps each data
+key it reads once. When Vault is unreachable, the processes keep using their current
+data key to encrypt, and the data keys they already unwrapped to decrypt. A process
+that starts while Vault is unreachable can't read or write secrets until Vault is back.
+Secrets that aren't needed are never decrypted: API tokens and MCP endpoints are
+authenticated with the hash of their key, and the login page doesn't read the SSO
+client secrets, so they keep working while Vault is unreachable.
 
 All the environment variables are listed in the
 [configuration reference](configuration.md#encryption-at-rest-configuration).
 
 ## Upgrading
 
-The database migrations only prepare the columns, so that the previous Baserow version
-keeps working during a rolling upgrade. Once every instance runs the new version:
+New installations encrypt secrets from the start.
+
+After upgrading an existing installation, secrets are still written in plain text, so
+that the previous version, which keeps running during a rolling upgrade, can read
+everything the new version writes. Once every instance runs the new version, run:
 
 ```bash
 # Shows, per column, how many values are still stored in plain text.
 ./baserow encrypt_data --dry-run
-# Encrypts them.
+# Enables encryption at rest and encrypts the existing secrets.
 ./baserow encrypt_data
 ```
 
-The command is safe to run multiple times and while Baserow is running.
+The `baserow/baserow` all-in-one image runs it automatically on startup, because the
+previous version never runs next to it. Set `BASEROW_ENCRYPT_DATA_ON_STARTUP=true` to do
+the same with the other images, when the previous version can't run while the new one
+starts, for example with a single backend and Celery container that are restarted
+together.
+
+The command first checks that the key provider works, for example that Vault is
+reachable and that Baserow is allowed to use the Transit key, and changes nothing when
+it doesn't. It's safe to run multiple times and while Baserow is running: a value that
+changes while it's being encrypted is left alone, because it's already written
+encrypted. Once encryption is enabled, the previous version can't read the secrets
+anymore, so a downgrade requires restoring a backup from before it was enabled.
 
 ## Rotating keys
 
@@ -210,7 +255,7 @@ BASEROW_ENCRYPTION_KEYS=<new key>
 ```
 
 **HashiCorp Vault.** Rotate the Transit key in Vault. New data keys are wrapped with the
-new version within an hour, or immediately after a restart. Then re-encrypt, and
+new version within a day, or immediately after a restart. Then re-encrypt, and
 optionally stop Vault from decrypting the old versions:
 
 ```bash

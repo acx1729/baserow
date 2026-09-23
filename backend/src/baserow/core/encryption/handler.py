@@ -1,36 +1,108 @@
 import base64
 import binascii
 import hashlib
+import hmac
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, List, NamedTuple, Optional, Tuple, Type
 
 from django.apps import apps
 from django.conf import settings
 from django.core.signals import setting_changed
-from django.db import models, transaction
+from django.db import DEFAULT_DB_ALIAS, models, transaction
 from django.db.models.functions import Cast
 from django.dispatch import receiver
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from loguru import logger
 
 from baserow.core.exceptions import InstanceTypeDoesNotExist
 
-from .exceptions import DecryptionError, EncryptionConfigurationError
+from .exceptions import (
+    DecryptionError,
+    EncryptionConfigurationError,
+    KeyProviderError,
+)
 from .registries import KeyProviderType, key_provider_type_registry
 
 ENCRYPTED_VALUE_PREFIX = "bxenc:"
 ENCRYPTED_VALUE_VERSION = "1"
+# Only values that fully match the format are decrypted, other values, even if they
+# happen to start with the prefix, were stored before encryption was enabled.
+ENCRYPTED_VALUE_PATTERN = re.compile(
+    r"^bxenc:1:([a-z][a-z0-9_]*):([A-Za-z0-9_-]+):([A-Za-z0-9_-]+)$"
+)
 NONCE_LENGTH = 12
+TAG_LENGTH = 16
 # A process starts using a new data key after this many seconds, so that a rotated
 # key encryption key is picked up without a restart.
-DATA_KEY_MAX_AGE_SECONDS = 60 * 60
+DATA_KEY_MAX_AGE_SECONDS = 24 * 60 * 60
+# When the key provider can't generate a new data key, for example because Vault is
+# unreachable, the current one keeps being used and a new one is tried after this
+# many seconds.
+DATA_KEY_RENEWAL_RETRY_SECONDS = 60
 # The maximum number of unwrapped data keys a process keeps in memory.
-DATA_KEY_CACHE_SIZE = 1024
+DATA_KEY_CACHE_SIZE = 10_000
+
+
+# How long a process trusts that encryption is still disabled before it reads the
+# setting again. Once enabled, encryption is never disabled again.
+ENCRYPTION_ENABLED_RECHECK_SECONDS = 10
+
+_encryption_enabled = False
+_encryption_enabled_checked_at: Optional[float] = None
+
+
+def is_encryption_enabled() -> bool:
+    """
+    Indicates whether values are encrypted when they're written. After upgrading an
+    existing instance, it's disabled until the `encrypt_data` management command
+    enables it, so that the previous Baserow version, which keeps running during a
+    rolling upgrade, can still read everything the new version writes. New instances
+    have it enabled from the start.
+    """
+
+    global _encryption_enabled, _encryption_enabled_checked_at
+
+    if _encryption_enabled:
+        return True
+
+    now = time.monotonic()
+    if (
+        _encryption_enabled_checked_at is None
+        or now - _encryption_enabled_checked_at >= ENCRYPTION_ENABLED_RECHECK_SECONDS
+    ):
+        from baserow.core.models import Settings
+
+        # Only this column is read, so that it also works in a data migration that
+        # runs before a later migration adds a column to the settings. The primary
+        # database is used because a read replica can lag behind.
+        enabled = (
+            Settings.objects.using(DEFAULT_DB_ALIAS)
+            .values_list("encrypt_secrets_at_rest", flat=True)
+            .first()
+        )
+        # Without settings yet, it's a new instance, which encrypts from the start.
+        _encryption_enabled = enabled is None or enabled
+        _encryption_enabled_checked_at = now
+    return _encryption_enabled
+
+
+def forget_encryption_enabled(enabled: bool = False):
+    """
+    Resets what this process knows about `is_encryption_enabled`. With `enabled`
+    False, the setting is read again on the next call.
+    """
+
+    global _encryption_enabled, _encryption_enabled_checked_at
+
+    _encryption_enabled = enabled
+    _encryption_enabled_checked_at = None
 
 
 def _b64encode(data: bytes) -> str:
@@ -93,6 +165,7 @@ class EncryptedFieldReport:
     field: str
     values: int = 0
     to_encrypt: int = 0
+    encrypted: int = 0
     failed: int = 0
 
 
@@ -122,7 +195,22 @@ class Keyring:
             now = time.monotonic()
             if self._current is None or self._current.expires_at <= now:
                 provider = get_encrypting_key_provider()
-                key, wrapped_key = provider.generate_data_key()
+                try:
+                    key, wrapped_key = provider.generate_data_key()
+                except KeyProviderError:
+                    if self._current is None or (
+                        self._current.provider_type != provider.type
+                    ):
+                        raise
+                    logger.exception(
+                        "Could not generate a new data key, the current one is used "
+                        "until the key provider is reachable again."
+                    )
+                    self._current = replace(
+                        self._current,
+                        expires_at=now + DATA_KEY_RENEWAL_RETRY_SECONDS,
+                    )
+                    return self._current
                 self._current = DataKey(
                     provider_type=provider.type,
                     wrapped_key=_b64encode(wrapped_key),
@@ -190,9 +278,9 @@ class EncryptionHandler:
     value can't be combined with another data key without detection.
     """
 
-    @staticmethod
-    def is_encrypted(value) -> bool:
-        return isinstance(value, str) and value.startswith(ENCRYPTED_VALUE_PREFIX)
+    @classmethod
+    def is_encrypted(cls, value) -> bool:
+        return cls._parse(value) is not None
 
     def encrypt(self, plaintext: str) -> str:
         """
@@ -226,10 +314,10 @@ class EncryptionHandler:
         :return: The plaintext.
         """
 
-        if not self.is_encrypted(value):
+        encrypted = self._parse(value)
+        if encrypted is None:
             return value
 
-        encrypted = self._parse(value)
         key = keyring.get_data_key(encrypted.provider_type, encrypted.wrapped_key)
         try:
             plaintext = AESGCM(key).decrypt(
@@ -252,10 +340,10 @@ class EncryptionHandler:
 
         if value is None or value == "":
             return False
-        if not self.is_encrypted(value):
+        encrypted = self._parse(value)
+        if encrypted is None:
             return True
 
-        encrypted = self._parse(value)
         current = keyring.get_current_data_key()
         if encrypted.provider_type != current.provider_type:
             return True
@@ -267,21 +355,70 @@ class EncryptionHandler:
             _b64decode(encrypted.wrapped_key), _b64decode(current.wrapped_key)
         )
 
+    def check_key_provider(self):
+        """
+        Makes sure that the configured key provider can generate a data key and unwrap
+        it again, e.g. that HashiCorp Vault is reachable and Baserow has access to the
+        Transit key.
+
+        :raises EncryptionError: When the key provider can't be used.
+        """
+
+        provider = get_encrypting_key_provider()
+        key, wrapped_key = provider.generate_data_key()
+        if not hmac.compare_digest(provider.unwrap_data_key(wrapped_key), key):
+            raise KeyProviderError(
+                f"The '{provider.type}' key provider unwrapped a data key incorrectly."
+            )
+
+    def enable_encryption(self) -> bool:
+        """
+        Makes every Baserow process encrypt the values it writes, see
+        `is_encryption_enabled`.
+
+        :return: Whether encryption was disabled before.
+        """
+
+        from baserow.core.cache import invalidate_cached_settings
+        from baserow.core.models import Settings
+
+        enabled = (
+            Settings.objects.filter(encrypt_secrets_at_rest=False).update(
+                encrypt_secrets_at_rest=True
+            )
+            > 0
+        )
+        invalidate_cached_settings()
+        transaction.on_commit(invalidate_cached_settings)
+        forget_encryption_enabled(enabled=True)
+        return enabled
+
     def encrypt_existing_values(
-        self, dry_run: bool = False, batch_size: int = 500
+        self, dry_run: bool = False, batch_size: int = 100
     ) -> List[EncryptedFieldReport]:
         """
         Encrypts all the values of encrypted fields that are still stored in plain
         text, and re-encrypts the values whose data key isn't protected by the
-        current key encryption key anymore. Must be run after upgrading and after
-        every rotation of the key encryption key.
+        current key encryption key anymore. Enables encryption of new values first,
+        once the key provider works. Must be run once every instance runs a version
+        with encryption at rest, and after every rotation of the key encryption key.
+
+        A value is only rewritten if it hasn't changed since it was read, so it's safe
+        to run while Baserow is running. No rows are locked.
 
         :param dry_run: Only count the values that must be (re-)encrypted.
-        :param batch_size: The number of rows that are processed at once.
+        :param batch_size: The number of rows that are read at once.
+        :raises EncryptionError: When the key provider can't be used.
         :return: A report per encrypted field.
         """
 
         from .fields import EncryptedFieldMixin
+
+        # Enabling encryption with a key provider that doesn't work would make every
+        # write of a secret fail.
+        self.check_key_provider()
+        if not dry_run:
+            self.enable_encryption()
 
         reports = []
         for model in apps.get_models():
@@ -328,80 +465,65 @@ class EncryptionHandler:
                 break
             last_pk = rows[-1][0]
 
-            stale_fields_per_pk = {}
             for pk, *values in rows:
+                stale_values = {}
                 for field, value in zip(fields, values):
                     if field.is_stored_unencrypted(value):
                         continue
                     report = reports[field.name]
                     report.values += 1
                     try:
-                        needs_reencryption = field.raw_value_needs_reencryption(value)
+                        if not field.raw_value_needs_reencryption(value):
+                            continue
+                        plaintext = field.raw_value_to_python(value)
                     except DecryptionError:
                         report.failed += 1
                         continue
-                    if needs_reencryption:
-                        report.to_encrypt += 1
-                        stale_fields_per_pk.setdefault(pk, []).append(field.name)
+                    report.to_encrypt += 1
+                    stale_values[field] = (value, plaintext)
 
-            if stale_fields_per_pk and not dry_run:
-                self._save_encrypted_fields(model, stale_fields_per_pk, reports)
+                if stale_values and not dry_run:
+                    if self._rewrite_values(model, pk, stale_values):
+                        for field in stale_values:
+                            reports[field.name].encrypted += 1
 
         return list(reports.values())
 
-    def _save_encrypted_fields(
+    def _rewrite_values(
         self,
         model: Type[models.Model],
-        stale_fields_per_pk: Dict[int, List[str]],
-        reports: Dict[str, EncryptedFieldReport],
-    ):
+        pk,
+        stale_values: Dict[models.Field, Tuple[object, object]],
+    ) -> bool:
         """
-        Writes the stale fields again, so that they're encrypted with the current
-        data key. If a value of the batch can't be decrypted, the rows are written
-        one by one so that all the other values are still encrypted.
+        Writes the plaintext of the stale values again, so that they're encrypted with
+        the current data key, but only if the stored values didn't change since they
+        were read. A value changed in the meantime is written by the application, and
+        thus already encrypted.
+
+        :return: Whether the row was updated.
         """
 
-        field_names = {name for names in stale_fields_per_pk.values() for name in names}
-        try:
-            with transaction.atomic():
-                self._rewrite_encrypted_fields(
-                    model, list(stale_fields_per_pk.keys()), field_names
-                )
-            return
-        except DecryptionError:
-            pass
-
-        for pk, names in stale_fields_per_pk.items():
-            try:
-                with transaction.atomic():
-                    self._rewrite_encrypted_fields(model, [pk], set(names))
-            except DecryptionError:
-                for name in names:
-                    reports[name].to_encrypt -= 1
-                    reports[name].failed += 1
-
-    def _rewrite_encrypted_fields(
-        self, model: Type[models.Model], pks: List[int], field_names: set
-    ):
         from .mixins import LookupHashMixin
 
-        # Loading the instances decrypts the values, writing them encrypts them
-        # again with the current data key. The rows are locked so that a concurrent
-        # change can't be overwritten with the value loaded here.
-        instances = list(
-            model._base_manager.select_for_update()
-            .filter(pk__in=pks)
-            .only("pk", *field_names)
-        )
+        queryset = model._base_manager.filter(pk=pk)
+        updates = {}
+        for field, (stored_value, plaintext) in stale_values.items():
+            alias = f"encryption_stored_{field.name}"
+            queryset = queryset.alias(
+                **{alias: Cast(field.name, output_field=field.get_raw_output_field())}
+            ).filter(**{alias: stored_value})
+            updates[field.name] = plaintext
+
         if issubclass(model, LookupHashMixin):
-            for instance in instances:
-                instance.refresh_lookup_hashes()
-            field_names = field_names | {
-                hash_field_name
-                for field_name, hash_field_name in model.lookup_hash_fields.items()
-                if field_name in field_names
-            }
-        model._base_manager.bulk_update(instances, list(field_names))
+            for field_name, hash_field_name in model.lookup_hash_fields.items():
+                if field_name in updates:
+                    plaintext = updates[field_name]
+                    updates[hash_field_name] = (
+                        self.hash_for_lookup(plaintext) if plaintext else None
+                    )
+
+        return queryset.update(**updates) > 0
 
     @staticmethod
     def hash_for_lookup(value: str) -> str:
@@ -414,20 +536,26 @@ class EncryptionHandler:
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     @staticmethod
-    def _parse(value: str) -> EncryptedValue:
-        parts = value.split(":")
-        if (
-            not value.isascii()
-            or len(parts) != 5
-            or parts[1] != ENCRYPTED_VALUE_VERSION
-        ):
-            raise DecryptionError("The encrypted value has an unsupported format.")
+    def _parse(value) -> Optional[EncryptedValue]:
+        """
+        Parses an encrypted value, or returns None when the value doesn't match the
+        format of an encrypted value and thus is a value stored in plain text.
+        """
 
-        _, _, provider_type, wrapped_key, payload = parts
+        if not isinstance(value, str) or not value.startswith(ENCRYPTED_VALUE_PREFIX):
+            return None
+        match = ENCRYPTED_VALUE_PATTERN.match(value)
+        if match is None:
+            return None
+
+        provider_type, wrapped_key, payload = match.groups()
         try:
+            _b64decode(wrapped_key)
             payload_bytes = _b64decode(payload)
-        except (binascii.Error, ValueError) as exc:
-            raise DecryptionError("The encrypted value is malformed.") from exc
+        except (binascii.Error, ValueError):
+            return None
+        if len(payload_bytes) < NONCE_LENGTH + TAG_LENGTH:
+            return None
 
         return EncryptedValue(
             provider_type=provider_type,

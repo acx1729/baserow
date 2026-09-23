@@ -1,7 +1,9 @@
 import json
 from io import StringIO
+from unittest.mock import patch
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import override_settings
 
 import pytest
@@ -9,12 +11,18 @@ import pytest
 from baserow.contrib.database.tokens.handler import TokenHandler
 from baserow.contrib.database.tokens.models import Token
 from baserow.contrib.integrations.slack.models import SlackBotIntegration
-from baserow.core.encryption.handler import EncryptionHandler
+from baserow.core.encryption.exceptions import KeyProviderError
+from baserow.core.encryption.handler import (
+    ENCRYPTION_ENABLED_RECHECK_SECONDS,
+    EncryptionHandler,
+    is_encryption_enabled,
+)
 from baserow.core.encryption.key_provider_types import (
+    LocalKeyProviderType,
     decode_encryption_key,
     generate_encryption_key,
 )
-from baserow.core.models import Workspace
+from baserow.core.models import Settings, Workspace
 
 
 def run_encrypt_data(*args):
@@ -124,3 +132,86 @@ def test_generate_encryption_key_command():
     call_command("generate_encryption_key", stdout=out)
 
     assert len(decode_encryption_key(out.getvalue().strip())) == 32
+
+
+@pytest.mark.django_db
+@patch("baserow.core.management.commands.encrypt_data.time.sleep")
+def test_encrypt_data_enables_encryption_after_an_upgrade(
+    mock_sleep, data_fixture, stored_value, encryption_at_rest_disabled
+):
+    integration = data_fixture.create_slack_bot_integration(token="xoxb-secret")
+    assert stored_value(SlackBotIntegration, "token", integration.pk) == ("xoxb-secret")
+
+    output = run_encrypt_data("--dry-run")
+    assert "Encryption at rest isn't enabled yet" in output
+    assert not Settings.objects.get().encrypt_secrets_at_rest
+
+    output = run_encrypt_data()
+
+    assert "Encryption at rest is enabled." in output
+    assert "integrations.SlackBotIntegration.token: 1 values, 1 encrypted" in output
+    assert Settings.objects.get().encrypt_secrets_at_rest
+    assert is_encryption_enabled()
+    # The second pass runs after every process noticed that encryption is enabled.
+    mock_sleep.assert_called_once_with(ENCRYPTION_ENABLED_RECHECK_SECONDS)
+    assert EncryptionHandler.is_encrypted(
+        stored_value(SlackBotIntegration, "token", integration.pk)
+    )
+
+    new_integration = data_fixture.create_slack_bot_integration(token="xoxb-new")
+    assert EncryptionHandler.is_encrypted(
+        stored_value(SlackBotIntegration, "token", new_integration.pk)
+    )
+
+
+@pytest.mark.django_db
+def test_encrypt_data_does_not_enable_encryption_when_the_key_provider_fails(
+    data_fixture, stored_value, encryption_at_rest_disabled
+):
+    integration = data_fixture.create_slack_bot_integration(token="xoxb-secret")
+
+    for method in ["generate_data_key", "unwrap_data_key"]:
+        with patch.object(
+            LocalKeyProviderType,
+            method,
+            side_effect=KeyProviderError("Vault is unreachable."),
+        ):
+            with pytest.raises(CommandError, match="nothing has been changed"):
+                run_encrypt_data()
+            with pytest.raises(CommandError, match="nothing has been changed"):
+                run_encrypt_data("--if-not-enabled")
+
+    assert not Settings.objects.get().encrypt_secrets_at_rest
+    assert not is_encryption_enabled()
+    assert stored_value(SlackBotIntegration, "token", integration.pk) == "xoxb-secret"
+
+
+@pytest.mark.django_db
+def test_encrypt_data_if_not_enabled_does_nothing_once_enabled(
+    data_fixture, store_raw_value
+):
+    integration = data_fixture.create_slack_bot_integration()
+    store_raw_value(SlackBotIntegration, "token", integration.pk, "xoxb-legacy")
+
+    assert "already enabled" in run_encrypt_data("--if-not-enabled")
+    assert "1 values must be encrypted." in run_encrypt_data("--dry-run")
+
+
+@pytest.mark.django_db
+def test_encrypt_data_does_not_overwrite_a_value_changed_concurrently(
+    data_fixture, stored_value, store_raw_value
+):
+    integration = data_fixture.create_slack_bot_integration()
+    store_raw_value(SlackBotIntegration, "token", integration.pk, "xoxb-read")
+    field = SlackBotIntegration._meta.get_field("token")
+
+    # The value changed after the command read it.
+    store_raw_value(SlackBotIntegration, "token", integration.pk, "xoxb-changed")
+    rewritten = EncryptionHandler()._rewrite_values(
+        SlackBotIntegration, integration.pk, {field: ("xoxb-read", "xoxb-read")}
+    )
+
+    assert not rewritten
+    assert stored_value(SlackBotIntegration, "token", integration.pk) == (
+        "xoxb-changed"
+    )

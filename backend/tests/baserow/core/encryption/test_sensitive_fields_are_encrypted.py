@@ -13,6 +13,7 @@ SENSITIVE_FIELD_NAME = re.compile(
 NOT_SENSITIVE_FIELD_NAMES = {
     "access_token_url",
     "allow_reset_password",
+    "encrypt_secrets_at_rest",
     "last_password_change",
     "use_id_token",
     "user_session_id",

@@ -3,6 +3,7 @@
 import baserow.contrib.database.webhooks.validators
 import baserow.core.encryption.fields
 import django.core.validators
+from baserow.core.encryption.migration_operations import AddFieldIfNotExists
 from django.db import migrations, models
 
 
@@ -13,7 +14,9 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.AddField(
+        # The column exists already when upgrading from a release that encryption at
+        # rest was backported to, see `AddFieldIfNotExists`.
+        AddFieldIfNotExists(
             model_name="token",
             name="key_hash",
             field=models.CharField(

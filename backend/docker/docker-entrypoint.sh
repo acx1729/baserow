@@ -209,6 +209,13 @@ run_setup_commands_if_configured(){
     echo "python /baserow/backend/src/baserow/manage.py $migration_command"
     OTEL_SERVICE_NAME=backend-migrate python /baserow/backend/src/baserow/manage.py "$migration_command"
   fi
+  # Only enable this when the previous version can't run at the same time, otherwise
+  # run `encrypt_data` once every instance runs the new version.
+  if [ "${BASEROW_ENCRYPT_DATA_ON_STARTUP:-false}" = "true" ] ; then
+    echo "python /baserow/backend/src/baserow/manage.py encrypt_data --if-not-enabled"
+    python /baserow/backend/src/baserow/manage.py encrypt_data --if-not-enabled \
+      || echo "Encrypting the secrets at rest failed, run the encrypt_data command manually."
+  fi
 }
 
 start_celery_worker(){

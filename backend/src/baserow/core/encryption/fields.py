@@ -5,7 +5,23 @@ from django.core.exceptions import FieldError
 from django.db import models
 from django.db.models.lookups import Exact, IsNull
 
-from .handler import EncryptionHandler
+from .handler import EncryptionHandler, is_encryption_enabled
+
+
+class EncryptedStr(str):
+    """
+    The plaintext of an `EncryptedTextField` that remembers how it's stored in the
+    database. Saving it unchanged writes back the stored ciphertext, so saving a row
+    doesn't re-encrypt its secrets. It's pickled and copied as a regular string.
+    """
+
+    def __new__(cls, value: str, stored_value: str):
+        instance = super().__new__(cls, value)
+        instance.stored_value = stored_value
+        return instance
+
+    def __reduce__(self):
+        return str, (str(self),)
 
 
 class EncryptedEmptyExact(Exact):
@@ -49,6 +65,11 @@ class EncryptedFieldMixin:
             return True
         return EncryptionHandler().needs_reencryption(raw_value)
 
+    def raw_value_to_python(self, raw_value):
+        """Returns the plaintext of a value read with `get_raw_output_field`."""
+
+        raise NotImplementedError
+
 
 class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     """
@@ -60,6 +81,8 @@ class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     - A value that was stored before the column became encrypted is returned as it
       is, so converting an existing column doesn't need a data migration. The
       `encrypt_data` management command encrypts those values afterwards.
+    - Values are written in plain text until encryption is enabled, see
+      `is_encryption_enabled`.
     - The database can't compare encrypted values, so filtering and uniqueness
       aren't supported. Only `isnull` and comparing with an empty string are.
     """
@@ -101,19 +124,28 @@ class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     def get_raw_output_field(self) -> models.Field:
         return models.TextField()
 
+    def raw_value_to_python(self, raw_value):
+        return EncryptionHandler().decrypt(raw_value)
+
     def is_stored_unencrypted(self, raw_value) -> bool:
         return raw_value is None or raw_value == ""
 
     def get_prep_value(self, value):
+        if isinstance(value, EncryptedStr) and EncryptionHandler.is_encrypted(
+            value.stored_value
+        ):
+            return value.stored_value
         value = super().get_prep_value(value)
         if self.is_stored_unencrypted(value):
             return value
+        if not is_encryption_enabled():
+            return str(value)
         return EncryptionHandler().encrypt(value)
 
     def from_db_value(self, value, expression, connection):
-        if value is None or value == "":
+        if self.is_stored_unencrypted(value):
             return value
-        return EncryptionHandler().decrypt(value)
+        return EncryptedStr(EncryptionHandler().decrypt(value), value)
 
 
 class EncryptedJSONField(EncryptedFieldMixin, models.JSONField):
@@ -141,12 +173,17 @@ class EncryptedJSONField(EncryptedFieldMixin, models.JSONField):
     def get_raw_output_field(self) -> models.Field:
         return models.JSONField()
 
+    def raw_value_to_python(self, raw_value):
+        if EncryptionHandler.is_encrypted(raw_value):
+            return json.loads(EncryptionHandler().decrypt(raw_value), cls=self.decoder)
+        return raw_value
+
     def is_stored_unencrypted(self, raw_value) -> bool:
         return raw_value is None or raw_value == {} or raw_value == []
 
     def get_prep_value(self, value):
         value = super().get_prep_value(value)
-        if self.is_stored_unencrypted(value):
+        if self.is_stored_unencrypted(value) or not is_encryption_enabled():
             return value
         return EncryptionHandler().encrypt(json.dumps(value, cls=self.encoder))
 

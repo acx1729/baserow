@@ -1,5 +1,6 @@
 import base64
 import json
+from unittest.mock import patch
 from urllib.parse import parse_qsl, urlparse
 
 from django.conf import settings
@@ -15,6 +16,8 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 import advocate
 from advocate.exceptions import UnacceptableAddressException
+from baserow.core.encryption.exceptions import DecryptionError
+from baserow.core.encryption.handler import EncryptionHandler
 from baserow.core.registries import auth_provider_type_registry
 from baserow_enterprise.sso.exceptions import AuthFlowError, InvalidProviderUrl
 from baserow_enterprise.sso.oauth2.auth_provider_types import (
@@ -796,3 +799,25 @@ def test_google_email_verified_in_user_info_response(enterprise_data_fixture):
         session,
     )
     assert user_info.email_verified is True
+
+
+@pytest.mark.django_db
+@override_settings(DEBUG=True)
+def test_get_login_options_does_not_decrypt_the_secret(
+    data_fixture, enterprise_data_fixture
+):
+    data_fixture.create_password_provider()
+    provider = enterprise_data_fixture.create_oauth_provider(
+        type="google", client_id="client_id", secret="secret", name="Google"
+    )
+    enterprise_data_fixture.enable_enterprise()
+    provider_type = auth_provider_type_registry.get_by_model(provider)
+
+    # The login page is public and must work even when the key provider is
+    # unavailable, the secret isn't needed to render it.
+    with patch.object(
+        EncryptionHandler, "decrypt", side_effect=DecryptionError("unavailable")
+    ):
+        options = provider_type.get_login_options()
+
+    assert [item["name"] for item in options["items"]] == ["Google"]

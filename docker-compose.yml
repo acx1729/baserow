@@ -308,6 +308,7 @@ x-backend-variables:
   BASEROW_CLOUDFLARE_TURNSTILE_SECRET_KEY:
   # Encryption at rest of the secrets stored in the database, see
   # https://baserow.io/docs/installation%2Fencryption-at-rest
+  BASEROW_ENCRYPT_DATA_ON_STARTUP:
   BASEROW_ENCRYPTION_PROVIDER:
   BASEROW_ENCRYPTION_KEYS:
   BASEROW_ENCRYPTION_KEYS_FILE:

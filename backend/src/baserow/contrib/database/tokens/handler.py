@@ -57,9 +57,11 @@ class TokenHandler:
             return cached
 
         try:
+            # The workspace settings aren't needed, and deferring them keeps the AI
+            # provider keys they contain out of the token cache.
             token = get_by_lookup_hash(
                 Token.objects.select_related("workspace", "user__profile").defer(
-                    "user__password"
+                    "user__password", "workspace__generative_ai_models_settings"
                 ),
                 key,
             )

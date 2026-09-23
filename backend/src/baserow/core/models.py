@@ -180,6 +180,14 @@ class Settings(models.Model):
         help_text="Indicates whether anonymous visitors can report publicly shared "
         "resources, like views and forms, for abuse.",
     )
+    encrypt_secrets_at_rest = models.BooleanField(
+        default=True,
+        db_default=True,
+        help_text="Indicates whether secrets are encrypted when they're written. It's "
+        "disabled after upgrading an existing instance, so that the previous version "
+        "can read them during a rolling upgrade, until the `encrypt_data` management "
+        "command enables it.",
+    )
 
 
 class UserProfile(models.Model):

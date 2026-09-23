@@ -152,6 +152,34 @@ def test_vault_being_unreachable_is_a_key_provider_error():
     BASEROW_VAULT_APPROLE_ROLE_ID="role-id",
     BASEROW_VAULT_APPROLE_SECRET_ID="secret-id",
 )
+def test_rejected_login_is_not_a_decryption_error(transit_key):
+    login_url = f"{VAULT_ADDR}/v1/auth/approle/login"
+    transit_key.mock.add(
+        responses.POST, login_url, json={"auth": {"client_token": "s.token"}}
+    )
+    encrypted = EncryptionHandler().encrypt("secret")
+
+    # The secret id was revoked, Vault answers the login with HTTP 400.
+    transit_key.mock.replace(
+        responses.POST,
+        login_url,
+        status=400,
+        json={"errors": ["invalid role or secret ID"]},
+    )
+    keyring.reset()
+
+    with pytest.raises(KeyProviderError, match="Could not log in") as exc_info:
+        EncryptionHandler().decrypt(encrypted)
+    assert not isinstance(exc_info.value, DecryptionError)
+
+
+@override_settings(
+    BASEROW_ENCRYPTION_PROVIDER="hashicorp_vault",
+    BASEROW_VAULT_ADDR=VAULT_ADDR,
+    BASEROW_VAULT_AUTH_METHOD="approle",
+    BASEROW_VAULT_APPROLE_ROLE_ID="role-id",
+    BASEROW_VAULT_APPROLE_SECRET_ID="secret-id",
+)
 def test_approle_authentication_logs_in_again_when_the_token_is_revoked(
     transit_key,
 ):
