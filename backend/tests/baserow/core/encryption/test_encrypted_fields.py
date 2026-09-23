@@ -1,6 +1,7 @@
 import copy
 import json
 import pickle
+from unittest.mock import Mock, patch
 
 from django.apps.registry import Apps
 from django.core import checks
@@ -12,16 +13,20 @@ import pytest
 from baserow.contrib.database.webhooks.models import TableWebhookHeader
 from baserow.contrib.integrations.core.models import SMTPIntegration
 from baserow.contrib.integrations.slack.models import SlackBotIntegration
+from baserow.core.encryption.exceptions import DecryptionError, KeyProviderError
 from baserow.core.encryption.fields import (
     EncryptedJSONField,
     EncryptedStr,
     EncryptedTextField,
+    UndecryptedValue,
 )
 from baserow.core.encryption.handler import (
     EncryptionHandler,
     forget_encryption_enabled,
     is_encryption_enabled,
+    keyring,
 )
+from baserow.core.encryption.key_provider_types import LocalKeyProviderType
 from baserow.core.models import Settings, Workspace
 
 
@@ -241,3 +246,112 @@ def test_decrypted_values_are_pickled_and_copied_as_plain_strings(data_fixture):
     ]:
         assert copied == "xoxb-secret"
         assert type(copied) is str
+
+
+def key_provider_unreachable():
+    """Like a process that starts while HashiCorp Vault is unreachable."""
+
+    keyring.reset()
+    error = KeyProviderError("The key provider is unreachable.")
+    return patch.multiple(
+        LocalKeyProviderType,
+        unwrap_data_key=Mock(side_effect=error),
+        generate_data_key=Mock(side_effect=error),
+    )
+
+
+def value_cannot_be_decrypted():
+    """Like a value whose key was removed."""
+
+    return patch.object(
+        EncryptionHandler, "decrypt", side_effect=DecryptionError("Unknown key.")
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "cannot_decrypt,error",
+    [
+        (key_provider_unreachable, KeyProviderError),
+        (value_cannot_be_decrypted, DecryptionError),
+    ],
+)
+def test_rows_are_loaded_and_saved_when_a_secret_cannot_be_decrypted(
+    data_fixture, stored_value, cannot_decrypt, error
+):
+    """
+    A workspace is loaded by almost every request, but its generative AI settings
+    are only needed by the AI features, so only those fail.
+    """
+
+    workspace = data_fixture.create_workspace(name="Workspace")
+    workspace.generative_ai_models_settings = {"openai": {"api_key": "sk-secret"}}
+    workspace.save()
+    integration = data_fixture.create_slack_bot_integration(token="xoxb-secret")
+    stored_settings = stored_value(
+        Workspace, "generative_ai_models_settings", workspace.id
+    )
+    stored_token = stored_value(SlackBotIntegration, "token", integration.id)
+
+    with cannot_decrypt():
+        workspace = Workspace.objects.get(id=workspace.id)
+        integration = SlackBotIntegration.objects.get(id=integration.id)
+
+        assert workspace.name == "Workspace"
+        with pytest.raises(error):
+            workspace.generative_ai_models_settings
+        with pytest.raises(error):
+            integration.token
+        assert isinstance(
+            SlackBotIntegration.objects.values_list("token", flat=True).get(
+                id=integration.id
+            ),
+            UndecryptedValue,
+        )
+
+        workspace.name = "Renamed"
+        workspace.save()
+        integration.name = "Renamed"
+        integration.save()
+
+    assert stored_value(Workspace, "generative_ai_models_settings", workspace.id) == (
+        stored_settings
+    )
+    assert stored_value(SlackBotIntegration, "token", integration.id) == stored_token
+    # Decrypted as soon as it's possible again.
+    assert workspace.generative_ai_models_settings == {
+        "openai": {"api_key": "sk-secret"}
+    }
+    assert integration.token == "xoxb-secret"
+    workspace.refresh_from_db()
+    assert workspace.name == "Renamed"
+
+
+@pytest.mark.django_db
+def test_saving_unchanged_json_keeps_the_stored_ciphertext(data_fixture, stored_value):
+    workspace = data_fixture.create_workspace()
+    workspace.generative_ai_models_settings = {"openai": {"api_key": "sk-secret"}}
+    workspace.save()
+    stored = stored_value(Workspace, "generative_ai_models_settings", workspace.id)
+
+    workspace = Workspace.objects.get(id=workspace.id)
+    workspace.save()
+    assert stored_value(Workspace, "generative_ai_models_settings", workspace.id) == (
+        stored
+    )
+
+    # Changed in place.
+    workspace.generative_ai_models_settings["openai"]["api_key"] = "sk-changed"
+    workspace.save()
+    changed = stored_value(Workspace, "generative_ai_models_settings", workspace.id)
+    assert changed != stored
+    assert json.loads(EncryptionHandler().decrypt(changed)) == {
+        "openai": {"api_key": "sk-changed"}
+    }
+    workspace.refresh_from_db()
+    assert workspace.generative_ai_models_settings == {
+        "openai": {"api_key": "sk-changed"}
+    }
+    assert pickle.loads(pickle.dumps(workspace.generative_ai_models_settings)) == {  # noqa: S301
+        "openai": {"api_key": "sk-changed"}
+    }

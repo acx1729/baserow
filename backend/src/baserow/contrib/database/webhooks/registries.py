@@ -196,18 +196,7 @@ class WebhookEventType(Instance):
             return
 
         webhook_handler = WebhookHandler()
-        try:
-            # Evaluating the queryset decrypts the URLs and headers.
-            webhooks = list(webhook_handler.find_webhooks_to_call(self, **kwargs))
-        except EncryptionError:
-            # The change that triggered the event is already committed, so it must
-            # not fail because the key provider can't decrypt the webhooks.
-            logger.exception(
-                f"The webhooks for the {self.type} event could not be decrypted and "
-                f"are not called."
-            )
-            return
-
+        webhooks = webhook_handler.find_webhooks_to_call(self, **kwargs)
         event_id = uuid.uuid4()
         for webhook in webhooks:
             try:
@@ -227,6 +216,13 @@ class WebhookEventType(Instance):
             # we don't want to fail, but rather don't do anything.
             except SkipWebhookCall:
                 pass
+            except EncryptionError:
+                # The change that triggered the event is already committed, so it
+                # must not fail because the key provider can't decrypt the webhook.
+                logger.exception(
+                    f"Webhook {webhook.id} could not be decrypted and is not called "
+                    f"for the {self.type} event."
+                )
 
     def after_update(self, webhook_event: TableWebhookEvent):
         """
