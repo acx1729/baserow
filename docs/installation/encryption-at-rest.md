@@ -126,6 +126,10 @@ Stealing the database and the Baserow configuration isn't enough anymore, the at
 also needs a valid Vault identity. Every unwrap is recorded in the Vault audit log, and
 revoking Baserow's access to the Transit key makes the secrets unreadable.
 
+[OpenBao](https://openbao.org), the open source fork of Vault, has the same Transit
+secrets engine, API and auth methods. Use the same provider and set up OpenBao with the
+commands below, using `bao` instead of `vault`.
+
 1. Enable the Transit engine and create the key:
 
    ```bash
