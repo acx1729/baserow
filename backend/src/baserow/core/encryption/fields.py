@@ -4,7 +4,9 @@ from django.core import checks, validators
 from django.core.exceptions import FieldError
 from django.db import models
 from django.db.models.lookups import Exact, IsNull
+from django.db.models.query_utils import DeferredAttribute
 
+from .exceptions import EncryptionError
 from .handler import EncryptionHandler, is_encryption_enabled
 
 
@@ -22,6 +24,69 @@ class EncryptedStr(str):
 
     def __reduce__(self):
         return str, (str(self),)
+
+
+class EncryptedJSONMixin:
+    """
+    The plaintext of an `EncryptedJSONField` that remembers how it's stored in the
+    database, see `EncryptedStr`. It can be changed in place, so it's only written
+    back unchanged if it still serializes to the decrypted JSON.
+    """
+
+    def remember_stored_value(self, stored_value: str, plaintext: str):
+        self.stored_value = stored_value
+        self.plaintext = plaintext
+        return self
+
+    def is_unchanged(self, encoder) -> bool:
+        return json.dumps(self, cls=encoder) == self.plaintext
+
+
+class EncryptedDict(EncryptedJSONMixin, dict):
+    def __reduce__(self):
+        return dict, (dict(self),)
+
+
+class EncryptedList(EncryptedJSONMixin, list):
+    def __reduce__(self):
+        return list, (list(self),)
+
+
+class UndecryptedValue:
+    """
+    Loaded instead of an encrypted value that couldn't be decrypted, for example
+    because HashiCorp Vault is unreachable or the key was removed, so that loading
+    the row doesn't fail. Only reading the value from the model instance does, see
+    `EncryptedAttribute`, and saving the row writes the stored value back unchanged.
+    """
+
+    __slots__ = ("stored_value",)
+
+    def __init__(self, stored_value):
+        self.stored_value = stored_value
+
+    def __repr__(self):
+        return "<UndecryptedValue>"
+
+    def __reduce__(self):
+        return UndecryptedValue, (self.stored_value,)
+
+
+class EncryptedAttribute(DeferredAttribute):
+    """
+    Decrypts an `UndecryptedValue` when it's read, which raises the decryption error
+    if it still can't be decrypted.
+    """
+
+    def __get__(self, instance, cls=None):
+        value = super().__get__(instance, cls)
+        if isinstance(value, UndecryptedValue):
+            value = self.field.decrypt_stored_value(value.stored_value)
+            instance.__dict__[self.field.attname] = value
+        return value
+
+    def __set__(self, instance, value):
+        instance.__dict__[self.field.attname] = value
 
 
 class EncryptedEmptyExact(Exact):
@@ -70,6 +135,34 @@ class EncryptedFieldMixin:
 
         raise NotImplementedError
 
+    def decrypt_stored_value(self, stored_value):
+        """
+        Returns the plaintext of an encrypted stored value.
+
+        :raises EncryptionError: When the value can't be decrypted.
+        """
+
+        raise NotImplementedError
+
+    def from_stored_value(self, stored_value):
+        """
+        Returns the plaintext of an encrypted stored value, or an `UndecryptedValue`
+        if it can't be decrypted, so that the row can still be loaded.
+        """
+
+        try:
+            return self.decrypt_stored_value(stored_value)
+        except EncryptionError:
+            return UndecryptedValue(stored_value)
+
+    def pre_save(self, model_instance, add):
+        # Reading the attribute would try to decrypt it, while it's written back
+        # unchanged.
+        value = model_instance.__dict__.get(self.attname)
+        if isinstance(value, UndecryptedValue):
+            return value
+        return super().pre_save(model_instance, add)
+
 
 class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     """
@@ -88,6 +181,7 @@ class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     """
 
     description = "Text encrypted at rest"
+    descriptor_class = EncryptedAttribute
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -127,10 +221,15 @@ class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     def raw_value_to_python(self, raw_value):
         return EncryptionHandler().decrypt(raw_value)
 
+    def decrypt_stored_value(self, stored_value):
+        return EncryptedStr(EncryptionHandler().decrypt(stored_value), stored_value)
+
     def is_stored_unencrypted(self, raw_value) -> bool:
         return raw_value is None or raw_value == ""
 
     def get_prep_value(self, value):
+        if isinstance(value, UndecryptedValue):
+            return value.stored_value
         if isinstance(value, EncryptedStr) and EncryptionHandler.is_encrypted(
             value.stored_value
         ):
@@ -145,7 +244,7 @@ class EncryptedTextField(EncryptedFieldMixin, models.TextField):
     def from_db_value(self, value, expression, connection):
         if self.is_stored_unencrypted(value):
             return value
-        return EncryptedStr(EncryptionHandler().decrypt(value), value)
+        return self.from_stored_value(value)
 
 
 class EncryptedJSONField(EncryptedFieldMixin, models.JSONField):
@@ -161,6 +260,7 @@ class EncryptedJSONField(EncryptedFieldMixin, models.JSONField):
     """
 
     description = "JSON encrypted at rest"
+    descriptor_class = EncryptedAttribute
 
     def get_lookup(self, lookup_name):
         if lookup_name == "isnull":
@@ -178,10 +278,23 @@ class EncryptedJSONField(EncryptedFieldMixin, models.JSONField):
             return json.loads(EncryptionHandler().decrypt(raw_value), cls=self.decoder)
         return raw_value
 
+    def decrypt_stored_value(self, stored_value):
+        plaintext = EncryptionHandler().decrypt(stored_value)
+        value = json.loads(plaintext, cls=self.decoder)
+        if isinstance(value, dict):
+            return EncryptedDict(value).remember_stored_value(stored_value, plaintext)
+        if isinstance(value, list):
+            return EncryptedList(value).remember_stored_value(stored_value, plaintext)
+        return value
+
     def is_stored_unencrypted(self, raw_value) -> bool:
         return raw_value is None or raw_value == {} or raw_value == []
 
     def get_prep_value(self, value):
+        if isinstance(value, UndecryptedValue):
+            return value.stored_value
+        if isinstance(value, EncryptedJSONMixin) and value.is_unchanged(self.encoder):
+            return value.stored_value
         value = super().get_prep_value(value)
         if self.is_stored_unencrypted(value) or not is_encryption_enabled():
             return value
@@ -190,5 +303,5 @@ class EncryptedJSONField(EncryptedFieldMixin, models.JSONField):
     def from_db_value(self, value, expression, connection):
         value = super().from_db_value(value, expression, connection)
         if EncryptionHandler.is_encrypted(value):
-            return json.loads(EncryptionHandler().decrypt(value), cls=self.decoder)
+            return self.from_stored_value(value)
         return value

@@ -7,6 +7,9 @@ from django.utils.translation import gettext_lazy as _
 from baserow.core.action.models import Action
 from baserow.core.action.registries import ActionTypeDescription, UndoableActionType
 from baserow.core.action.scopes import ApplicationActionScopeType
+from baserow.core.app_auth_providers.registries import app_auth_provider_type_registry
+from baserow.core.encryption.fields import EncryptedTextField
+from baserow.core.encryption.handler import EncryptionHandler, is_encryption_enabled
 from baserow.core.models import Application
 from baserow.core.trash.handler import TrashHandler
 from baserow.core.user_sources.handler import UserSourceHandler
@@ -18,6 +21,44 @@ from baserow.core.user_sources.trash_types import UserSourceTrashableItemType
 USER_SOURCE_ACTION_CONTEXT = _(
     'in application "%(application_name)s" (%(application_id)s).'
 )
+
+
+def _map_auth_provider_secrets(values: Dict[str, Any], map_secret) -> Dict[str, Any]:
+    """
+    Applies `map_secret` to the values of the encrypted fields of the auth providers
+    in the undo/redo values of a user source, e.g. an OpenID Connect client secret.
+    """
+
+    if not values.get("auth_providers"):
+        return values
+
+    auth_providers = []
+    for auth_provider in values["auth_providers"]:
+        auth_provider = dict(auth_provider)
+        model_class = app_auth_provider_type_registry.get(
+            auth_provider["type"]
+        ).model_class
+        for field in model_class._meta.concrete_fields:
+            if isinstance(field, EncryptedTextField) and auth_provider.get(field.name):
+                auth_provider[field.name] = map_secret(auth_provider[field.name])
+        auth_providers.append(auth_provider)
+    return {**values, "auth_providers": auth_providers}
+
+
+def encrypt_auth_provider_secrets(values: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    The undo/redo values are stored in `core.Action`, so the auth provider secrets
+    are encrypted like in their own table.
+    """
+
+    if not is_encryption_enabled():
+        return values
+    handler = EncryptionHandler()
+    return _map_auth_provider_secrets(values, lambda value: handler.encrypt(str(value)))
+
+
+def decrypt_auth_provider_secrets(values: Dict[str, Any]) -> Dict[str, Any]:
+    return _map_auth_provider_secrets(values, EncryptionHandler().decrypt)
 
 
 class CreateUserSourceActionType(UndoableActionType):
@@ -113,8 +154,8 @@ class UpdateUserSourceActionType(UndoableActionType):
                 application.id,
                 application.name,
                 updated.user_source.id,
-                updated.original_values,
-                updated.new_values,
+                encrypt_auth_provider_secrets(updated.original_values),
+                encrypt_auth_provider_secrets(updated.new_values),
             ),
             scope=cls.scope(application.id),
             workspace=application.workspace,
@@ -131,7 +172,9 @@ class UpdateUserSourceActionType(UndoableActionType):
             params.user_source_id
         )
         UserSourceService().update_user_source(
-            user, user_source, **params.user_source_original_params
+            user,
+            user_source,
+            **decrypt_auth_provider_secrets(params.user_source_original_params),
         )
 
     @classmethod
@@ -140,7 +183,9 @@ class UpdateUserSourceActionType(UndoableActionType):
             params.user_source_id
         )
         UserSourceService().update_user_source(
-            user, user_source, **params.user_source_new_params
+            user,
+            user_source,
+            **decrypt_auth_provider_secrets(params.user_source_new_params),
         )
 
 

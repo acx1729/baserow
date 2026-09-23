@@ -547,7 +547,9 @@ class OpenIdConnectAuthProviderTypeMixin:
 
     def create(self, **values):
         urls = self.get_wellknown_urls(values["base_url"])
-        return super().create(**values, **asdict(urls))
+        # The values already contain the URLs when an update of the auth providers of
+        # a user source is undone, which restores the provider as it was.
+        return super().create(**{**asdict(urls), **values})
 
     def update(self, provider, **values):
         if values.get("base_url"):

@@ -14,9 +14,14 @@ class LookupHashMixin:
     lookup_hash_fields: Dict[str, str] = {}
 
     def refresh_lookup_hashes(self):
+        from .fields import UndecryptedValue
+
         deferred_fields = self.get_deferred_fields()
         for field_name, hash_field_name in self.lookup_hash_fields.items():
-            if field_name in deferred_fields:
+            if field_name in deferred_fields or isinstance(
+                self.__dict__.get(field_name), UndecryptedValue
+            ):
+                # The value isn't changed, and neither is its hash.
                 continue
             value = getattr(self, field_name)
             setattr(

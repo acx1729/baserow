@@ -30,14 +30,15 @@ an encrypted managed database), and restrict who can access the database and res
 its backups. Files uploaded by users are stored outside of the database, protect them
 with encryption of the storage bucket or volume.
 
-Some secrets also exist outside of these columns for a short time:
+Some secrets can also exist outside of these columns:
 
 - Redis holds the URL and headers of webhook calls that are waiting to be sent, in the
   Celery queue and the webhook queue. Protect Redis with a password, TLS and encrypted
   storage, or disable its persistence.
-- The undo history keeps the previous settings of recently changed objects, for example
-  the client secret of an application builder OpenID Connect provider, until it's
-  cleaned up after `MINUTES_UNTIL_ACTION_CLEANED_UP` (120 minutes by default).
+- Formulas aren't encrypted. A secret that's typed into a formula, for example in the
+  headers of an HTTP request action, is stored as it is, also in the undo history.
+  Integration credentials are never stored in the undo history, and the client secrets
+  of application builder OpenID Connect providers are stored encrypted in it.
 
 ## What it doesn't protect against
 
@@ -79,6 +80,11 @@ secret is never stored twice in the same way.
 Empty values aren't encrypted. Values that were stored before encryption at rest
 existed keep working, and are encrypted by the `encrypt_data` management command, see
 [Upgrading](#upgrading).
+
+A secret is decrypted when it's used, not when its object is loaded. A value that can't
+be decrypted, for example because its key was removed or the key provider is
+unreachable, only makes the features that use it fail, and saving its object keeps the
+stored value.
 
 ## Choosing a key provider
 
@@ -207,10 +213,15 @@ before removing it.
 Every process asks Vault for a new data key at most once a day, and unwraps each data
 key it reads once. When Vault is unreachable, the processes keep using their current
 data key to encrypt, and the data keys they already unwrapped to decrypt. A process
-that starts while Vault is unreachable can't read or write secrets until Vault is back.
-Secrets that aren't needed are never decrypted: API tokens and MCP endpoints are
-authenticated with the hash of their key, and the login page doesn't read the SSO
-client secrets, so they keep working while Vault is unreachable.
+that starts while Vault is unreachable can't read or write secrets until Vault is back,
+but everything else keeps working:
+
+- A secret is only decrypted when a feature uses it. Loading, for example, a workspace
+  with generative AI settings or an integration doesn't need Vault, only using the API
+  key or the credentials does.
+- Saving an object doesn't need Vault either when its secrets didn't change.
+- API tokens and MCP endpoints are authenticated with the hash of their key, and the
+  login page doesn't read the SSO client secrets.
 
 All the environment variables are listed in the
 [configuration reference](configuration.md#encryption-at-rest-configuration).

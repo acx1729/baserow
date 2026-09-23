@@ -84,8 +84,10 @@ def test_keys_are_found_without_the_key_provider(data_fixture, stored_value):
         with transaction.atomic():
             assert async_to_sync(get_endpoint)(endpoint.key).id == endpoint.id
 
+        # Other features load the token, but only reading the key needs Vault.
+        loaded = Token.objects.get(id=token.id)
         with pytest.raises(KeyProviderError):
-            Token.objects.get(id=token.id)
+            loaded.key
 
 
 @pytest.mark.django_db
