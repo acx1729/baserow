@@ -20,6 +20,7 @@ from baserow.core.jobs.models import Job
 from baserow.core.user_files.models import UserFile
 
 from .action.models import Action
+from .encryption.fields import EncryptedJSONField, EncryptedTextField
 from .integrations.models import Integration
 from .mixins import (
     CreatedAndUpdatedOnMixin,
@@ -162,6 +163,14 @@ class Settings(models.Model):
         db_default=True,
         help_text="Indicates whether the signature of imported files should be verified.",
     )
+    encrypt_secrets_at_rest = models.BooleanField(
+        default=True,
+        db_default=True,
+        help_text="Indicates whether secrets are encrypted when they're written. It's "
+        "disabled after upgrading an existing instance, so that the previous version "
+        "can read them during a rolling upgrade, until the `encrypt_data` management "
+        "command enables it.",
+    )
 
 
 class UserProfile(models.Model):
@@ -268,7 +277,8 @@ class Workspace(HierarchicalModelMixin, TrashableModelMixin, CreatedAndUpdatedOn
     seats_taken = models.IntegerField(null=True)
     seats_taken_updated_at = models.DateTimeField(null=True)
     now = models.DateTimeField(null=True)
-    generative_ai_models_settings = models.JSONField(default=dict, null=True)
+    # Encrypted because it contains the API keys of the generative AI providers.
+    generative_ai_models_settings = EncryptedJSONField(default=dict, null=True)
 
     def get_parent(self):
         return None
@@ -821,7 +831,9 @@ class ImportApplicationsJob(
 
 class ImportExportTrustedSource(models.Model):
     name = models.CharField(max_length=255, blank=True)
-    private_key = models.TextField(help_text="The private key used to sign the export.")
+    private_key = EncryptedTextField(
+        help_text="The private key used to sign the export."
+    )
     public_key = models.TextField(
         help_text="The public key used to verify the signature of the export."
     )

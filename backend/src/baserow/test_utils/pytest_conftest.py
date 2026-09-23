@@ -959,6 +959,34 @@ def disable_full_text_search(settings):
 
 
 @pytest.fixture(autouse=True)
+def encryption_at_rest_enabled():
+    """
+    Tests run with encryption at rest enabled, like a new instance, without reading
+    the setting from the database. Use the `encryption_at_rest_disabled` fixture to
+    test an instance that was upgraded but where encryption isn't enabled yet.
+    """
+
+    from baserow.core.encryption.handler import forget_encryption_enabled
+
+    forget_encryption_enabled(enabled=True)
+    yield
+    forget_encryption_enabled(enabled=True)
+
+
+@pytest.fixture
+def encryption_at_rest_disabled(db):
+    """Disables encryption at rest like after upgrading an existing instance."""
+
+    from baserow.core.encryption.handler import forget_encryption_enabled
+    from baserow.core.models import Settings
+
+    Settings.objects.update_or_create(defaults={"encrypt_secrets_at_rest": False})
+    forget_encryption_enabled()
+    yield
+    forget_encryption_enabled(enabled=True)
+
+
+@pytest.fixture(autouse=True)
 def mutable_generative_ai_model_type_registry():
     from baserow.core.generative_ai.registries import generative_ai_model_type_registry
 

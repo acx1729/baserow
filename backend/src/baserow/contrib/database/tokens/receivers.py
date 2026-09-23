@@ -3,7 +3,10 @@ from django.db import transaction
 from django.db.models.signals import post_delete, post_save
 from django.dispatch import receiver
 
-from baserow.contrib.database.tokens.cache import invalidate_cached_token
+from baserow.contrib.database.tokens.cache import (
+    invalidate_cached_token,
+    invalidate_cached_token_by_hash,
+)
 from baserow.contrib.database.tokens.models import Token
 from baserow.core.models import UserProfile
 
@@ -19,8 +22,15 @@ def invalidate_db_token_cache_on_delete(sender, instance, **kwargs):
 
 
 def _invalidate_tokens_of_user(user_id: int) -> None:
-    keys = Token.objects.filter(user_id=user_id).values_list("key", flat=True)
-    for key in keys:
+    # The cache key is the hash of the key, so the keys don't have to be decrypted.
+    tokens = Token.objects.filter(user_id=user_id)
+    for key_hash in tokens.filter(key_hash__isnull=False).values_list(
+        "key_hash", flat=True
+    ):
+        invalidate_cached_token_by_hash(key_hash)
+    # Tokens created by the previous version during a rolling upgrade don't have a
+    # hash yet, their key is still in plain text.
+    for key in tokens.filter(key_hash__isnull=True).values_list("key", flat=True):
         invalidate_cached_token(key)
 
 

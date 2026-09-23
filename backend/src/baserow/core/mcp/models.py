@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from django.db import models
 
+from baserow.core.encryption.fields import EncryptedTextField
+from baserow.core.encryption.mixins import LookupHashMixin
 from baserow.core.mixins import (
     HierarchicalModelMixin,
     ParentWorkspaceTrashableModelMixin,
@@ -11,6 +13,7 @@ User = get_user_model()
 
 
 class MCPEndpoint(
+    LookupHashMixin,
     HierarchicalModelMixin,
     ParentWorkspaceTrashableModelMixin,
     models.Model,
@@ -24,11 +27,19 @@ class MCPEndpoint(
         max_length=100,
         help_text="The human readable name of the MCP endpoint for the user.",
     )
-    key = models.CharField(
+    # Encrypted at rest, use `key_hash` to find an endpoint by key. Only change the key
+    # with `save()`, which also updates `key_hash`.
+    key = EncryptedTextField(
         max_length=32,
+        help_text="The unique endpoint key that can be used to authorize for the MCP "
+        "service.",
+    )
+    key_hash = models.CharField(
+        max_length=64,
         unique=True,
-        db_index=True,
-        help_text="The unique endpoint key that can be used to authorize for the MCP service.",
+        null=True,
+        editable=False,
+        help_text="The SHA-256 hash of the key, used to find an endpoint by key.",
     )
     created = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(
@@ -39,6 +50,8 @@ class MCPEndpoint(
         on_delete=models.CASCADE,
         help_text="The workspace that the MCP endpoint belongs to.",
     )
+
+    lookup_hash_fields = {"key": "key_hash"}
 
     class Meta:
         ordering = ("id",)

@@ -2,6 +2,7 @@ import string
 
 import pytest
 
+from baserow.core.encryption.handler import EncryptionHandler
 from baserow.core.exceptions import UserNotInWorkspace
 from baserow.core.mcp.exceptions import (
     MaximumUniqueEndpointTriesError,
@@ -77,7 +78,9 @@ def test_generate_unique_key(data_fixture):
     assert handler.generate_unique_key(32) != handler.generate_unique_key(32)
 
     key = handler.generate_unique_key(32)
-    assert not MCPEndpoint.objects.filter(key=key).exists()
+    assert not MCPEndpoint.objects.filter(
+        key_hash=EncryptionHandler.hash_for_lookup(key)
+    ).exists()
 
     for char in string.ascii_letters + string.digits:
         data_fixture.create_mcp_endpoint(key=char, user=user, workspace=workspace)

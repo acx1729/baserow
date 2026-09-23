@@ -462,6 +462,16 @@ class CoreConfig(AppConfig):
 
         captcha_provider_registry.register(CloudflareTurnstileCaptchaProviderType())
 
+        import baserow.core.encryption.handler  # noqa: F401
+        from baserow.core.encryption.key_provider_types import (
+            HashiCorpVaultKeyProviderType,
+            LocalKeyProviderType,
+        )
+        from baserow.core.encryption.registries import key_provider_type_registry
+
+        key_provider_type_registry.register(LocalKeyProviderType())
+        key_provider_type_registry.register(HashiCorpVaultKeyProviderType())
+
         from baserow.api.settings.registries import settings_data_registry
         from baserow.core.captcha.settings_data_type import CaptchaSettingsDataType
 

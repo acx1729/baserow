@@ -483,6 +483,35 @@ SIMPLE_JWT = {
     "USER_AUTHENTICATION_RULE": lambda user: user is not None,
 }
 
+# Encryption at rest of secrets like API tokens, integration credentials and 2FA
+# secrets. The key provider that protects the data keys is either `local`, which
+# uses BASEROW_ENCRYPTION_KEYS (or a key derived from SECRET_KEY when empty), or
+# `hashicorp_vault`, which uses a HashiCorp Vault Transit key.
+BASEROW_ENCRYPTION_PROVIDER = os.getenv("BASEROW_ENCRYPTION_PROVIDER") or "local"
+BASEROW_ENCRYPTION_KEYS = [
+    key.strip()
+    for key in os.getenv("BASEROW_ENCRYPTION_KEYS", "").split(",")
+    if key.strip()
+]
+BASEROW_ENCRYPTION_KEYS_FILE = os.getenv("BASEROW_ENCRYPTION_KEYS_FILE", "")
+BASEROW_VAULT_ADDR = os.getenv("BASEROW_VAULT_ADDR", "")
+BASEROW_VAULT_NAMESPACE = os.getenv("BASEROW_VAULT_NAMESPACE", "")
+BASEROW_VAULT_CACERT = os.getenv("BASEROW_VAULT_CACERT", "")
+BASEROW_VAULT_TIMEOUT = float(os.getenv("BASEROW_VAULT_TIMEOUT") or 10)
+BASEROW_VAULT_TRANSIT_MOUNT = os.getenv("BASEROW_VAULT_TRANSIT_MOUNT") or "transit"
+BASEROW_VAULT_TRANSIT_KEY = os.getenv("BASEROW_VAULT_TRANSIT_KEY") or "baserow"
+BASEROW_VAULT_AUTH_METHOD = os.getenv("BASEROW_VAULT_AUTH_METHOD") or "token"
+BASEROW_VAULT_AUTH_MOUNT = os.getenv("BASEROW_VAULT_AUTH_MOUNT", "")
+BASEROW_VAULT_TOKEN = os.getenv("BASEROW_VAULT_TOKEN", "")
+BASEROW_VAULT_TOKEN_FILE = os.getenv("BASEROW_VAULT_TOKEN_FILE", "")
+BASEROW_VAULT_APPROLE_ROLE_ID = os.getenv("BASEROW_VAULT_APPROLE_ROLE_ID", "")
+BASEROW_VAULT_APPROLE_SECRET_ID = os.getenv("BASEROW_VAULT_APPROLE_SECRET_ID", "")
+BASEROW_VAULT_KUBERNETES_ROLE = os.getenv("BASEROW_VAULT_KUBERNETES_ROLE", "")
+BASEROW_VAULT_KUBERNETES_TOKEN_PATH = (
+    os.getenv("BASEROW_VAULT_KUBERNETES_TOKEN_PATH")
+    or "/var/run/secrets/kubernetes.io/serviceaccount/token"  # nosec
+)
+
 SPECTACULAR_SETTINGS = {
     "TITLE": "Baserow API spec",
     "DESCRIPTION": "For more information about our REST API, please visit "

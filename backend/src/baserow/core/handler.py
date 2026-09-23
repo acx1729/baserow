@@ -611,6 +611,7 @@ class CoreHandler(metaclass=baserow_trace_methods(tracer, exclude="clear_context
         Returns WorkspaceUser queryset that will prefetch workspaces and their users.
         """
 
+        from baserow.core.encryption.utils import defer_encrypted_fields
         from baserow.core.two_factor_auth.models import TwoFactorAuthProviderModel
 
         workspaceusers_with_user_and_profile = (
@@ -619,8 +620,13 @@ class CoreHandler(metaclass=baserow_trace_methods(tracer, exclude="clear_context
             .prefetch_related(
                 Prefetch(
                     "user__two_factor_auth_provider",
+                    # Only the type and state are used, the secrets aren't
+                    # decrypted.
                     queryset=specific_queryset(
-                        TwoFactorAuthProviderModel.objects.all()
+                        TwoFactorAuthProviderModel.objects.all(),
+                        per_content_type_queryset_hook=lambda model, queryset: (
+                            defer_encrypted_fields(queryset)
+                        ),
                     ),
                 )
             )

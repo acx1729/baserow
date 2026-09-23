@@ -38,6 +38,7 @@ from baserow.core.admin.users.exceptions import (
 )
 from baserow.core.admin.users.handler import UserAdminHandler
 from baserow.core.db import specific_queryset
+from baserow.core.encryption.utils import defer_encrypted_fields
 from baserow.core.two_factor_auth.exceptions import TwoFactorAuthNotConfigured
 from baserow.core.two_factor_auth.models import TwoFactorAuthProviderModel
 from baserow.core.user.exceptions import DeactivatedUserException, UserAlreadyExist
@@ -67,7 +68,13 @@ class UsersAdminView(AdminListingView):
             "workspaceuser_set__workspace",
             Prefetch(
                 "two_factor_auth_provider",
-                queryset=specific_queryset(TwoFactorAuthProviderModel.objects.all()),
+                # Only the type and state are listed, the secrets aren't decrypted.
+                queryset=specific_queryset(
+                    TwoFactorAuthProviderModel.objects.all(),
+                    per_content_type_queryset_hook=lambda model, queryset: (
+                        defer_encrypted_fields(queryset)
+                    ),
+                ),
             ),
         ).all()
 

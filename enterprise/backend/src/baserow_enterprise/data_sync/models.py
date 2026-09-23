@@ -4,6 +4,7 @@ from django.db import models
 from baserow.contrib.database.data_sync.models import DataSync
 from baserow.contrib.database.table.models import Table
 from baserow.contrib.database.views.models import View
+from baserow.core.encryption.fields import EncryptedTextField
 
 User = get_user_model()
 
@@ -123,7 +124,7 @@ class JiraIssuesDataSync(DataSync):
             f"the `jira_authentication` is equal `{JIRA_ISSUES_DATA_SYNC_API_TOKEN}`"
         ),
     )
-    jira_api_token = models.CharField(
+    jira_api_token = EncryptedTextField(
         max_length=255,
         help_text=(
             "The API or personal access token of the Jira account used for "
@@ -139,7 +140,7 @@ class GitHubIssuesDataSync(DataSync):
     github_issues_repo = models.CharField(
         max_length=255, help_text="The name of the repository on GitHub."
     )
-    github_issues_api_token = models.CharField(
+    github_issues_api_token = EncryptedTextField(
         max_length=255,
         help_text="The API token used to authenticate requests to GitHub.",
     )
@@ -155,14 +156,14 @@ class GitLabIssuesDataSync(DataSync):
         max_length=255,
         help_text="The ID of the GitLab project where to sync the issues with.",
     )
-    gitlab_access_token = models.CharField(
+    gitlab_access_token = EncryptedTextField(
         max_length=255,
         help_text="The API access token used to authenticate requests to GitLab.",
     )
 
 
 class HubSpotContactsDataSync(DataSync):
-    hubspot_access_token = models.CharField(
+    hubspot_access_token = EncryptedTextField(
         max_length=255,
         help_text="The private app access token used to authenticate requests to "
         "HubSpot.",

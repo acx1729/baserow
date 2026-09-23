@@ -2,6 +2,8 @@ from django.contrib.auth import get_user_model
 from django.db import models
 from django.db.models import Q
 
+from baserow.core.encryption.fields import EncryptedTextField
+from baserow.core.encryption.mixins import LookupHashMixin
 from baserow.core.mixins import (
     HierarchicalModelMixin,
     ParentWorkspaceTrashableModelMixin,
@@ -12,6 +14,7 @@ User = get_user_model()
 
 
 class Token(
+    LookupHashMixin,
     HierarchicalModelMixin,
     ParentWorkspaceTrashableModelMixin,
     models.Model,
@@ -25,12 +28,19 @@ class Token(
         max_length=100,
         help_text="The human readable name of the database token for the user.",
     )
-    key = models.CharField(
+    # Encrypted at rest, use `key_hash` to find a token by key. Only change the key
+    # with `save()`, which also updates `key_hash`.
+    key = EncryptedTextField(
         max_length=32,
-        unique=True,
-        db_index=True,
         help_text="The unique token key that can be used to authorize for the table "
         "row endpoints.",
+    )
+    key_hash = models.CharField(
+        max_length=64,
+        unique=True,
+        null=True,
+        editable=False,
+        help_text="The SHA-256 hash of the key, used to find a token by key.",
     )
     created = models.DateTimeField(auto_now_add=True)
     user = models.ForeignKey(
@@ -50,6 +60,8 @@ class Token(
         null=True,
         help_text="Timestamp when the last call was handled using this token.",
     )
+
+    lookup_hash_fields = {"key": "key_hash"}
 
     class Meta:
         ordering = ("id",)

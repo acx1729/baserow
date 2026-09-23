@@ -1,5 +1,6 @@
 from django.db import models
 
+from baserow.core.encryption.fields import EncryptedJSONField
 from baserow.core.formula.field import FormulaField
 from baserow.core.integrations.models import Integration
 from baserow.core.services.models import Service
@@ -12,8 +13,9 @@ class AIOutputType(models.TextChoices):
 
 class AIIntegration(Integration):
     # JSONField to store per-provider override settings. Structure:
-    # `{"openai": {"api_key": "...", "models": [...]}, ...}`
-    ai_settings = models.JSONField(default=dict, blank=True)
+    # `{"openai": {"api_key": "...", "models": [...]}, ...}`. It's encrypted
+    # because it contains API keys.
+    ai_settings = EncryptedJSONField(default=dict, blank=True)
 
 
 class AIAgentService(Service):

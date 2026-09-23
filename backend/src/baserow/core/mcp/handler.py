@@ -1,6 +1,8 @@
 from django.contrib.auth.models import AbstractUser
 from django.db.models import QuerySet
 
+from baserow.core.encryption.handler import EncryptionHandler
+from baserow.core.encryption.utils import get_by_lookup_hash
 from baserow.core.handler import CoreHandler
 from baserow.core.utils import random_string
 
@@ -31,8 +33,8 @@ class MCPEndpointHandler:
         """
 
         try:
-            endpoint = MCPEndpoint.objects.select_related("workspace", "user").get(
-                key=key
+            endpoint = get_by_lookup_hash(
+                MCPEndpoint.objects.select_related("workspace", "user"), key
             )
         except MCPEndpoint.DoesNotExist:
             raise MCPEndpointDoesNotExist(
@@ -107,7 +109,8 @@ class MCPEndpointHandler:
             i += 1
             key = random_string(length)
 
-            if not MCPEndpoint.objects.filter(key=key).exists():
+            key_hash = EncryptionHandler.hash_for_lookup(key)
+            if not MCPEndpoint.objects.filter(key_hash=key_hash).exists():
                 return key
 
     def create_endpoint(

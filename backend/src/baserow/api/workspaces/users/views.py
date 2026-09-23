@@ -31,6 +31,7 @@ from baserow.api.workspaces.users.errors import (
     ERROR_GROUP_USER_DOES_NOT_EXIST,
 )
 from baserow.core.db import specific_queryset
+from baserow.core.encryption.utils import defer_encrypted_fields
 from baserow.core.exceptions import (
     CannotDeleteYourselfFromWorkspace,
     UserInvalidWorkspacePermissionsError,
@@ -132,8 +133,13 @@ class WorkspaceUsersView(APIView, SearchableViewMixin, SortableViewMixin):
             .prefetch_related(
                 Prefetch(
                     "user__two_factor_auth_provider",
+                    # Only the type and state are listed, the secrets aren't
+                    # decrypted.
                     queryset=specific_queryset(
-                        TwoFactorAuthProviderModel.objects.all()
+                        TwoFactorAuthProviderModel.objects.all(),
+                        per_content_type_queryset_hook=lambda model, queryset: (
+                            defer_encrypted_fields(queryset)
+                        ),
                     ),
                 )
             )

@@ -8,6 +8,7 @@ from django.db import models
 from baserow.contrib.database.fields.models import Field
 from baserow.contrib.database.table.models import Table
 from baserow.contrib.database.views.models import View
+from baserow.core.encryption.fields import EncryptedTextField
 from baserow.core.models import CreatedAndUpdatedOnMixin
 
 from .validators import header_name_validator, header_value_validator, url_validator
@@ -35,8 +36,9 @@ class TableWebhook(CreatedAndUpdatedOnMixin, models.Model):
     )
 
     # We use a `TextField` here as Django `URLField` is based on 255 chars
-    # limited `CharField`
-    url = models.TextField(
+    # limited `CharField`. It's encrypted because the URL of many webhook receivers
+    # contains a secret.
+    url = EncryptedTextField(
         help_text="The URL that must be called when the webhook is triggered.",
         validators=[MaxLengthValidator(2000), url_validator],
     )
@@ -104,7 +106,7 @@ class TableWebhookHeader(models.Model):
         TableWebhook, related_name="headers", on_delete=models.CASCADE
     )
     name = models.TextField(validators=[header_name_validator])
-    value = models.TextField(validators=[header_value_validator])
+    value = EncryptedTextField(validators=[header_value_validator])
 
     class Meta:
         ordering = ("id",)
@@ -128,17 +130,21 @@ class TableWebhookCall(models.Model):
     )
     event_type = models.CharField(max_length=50)
     called_time = models.DateTimeField(null=True)
-    called_url = models.TextField(validators=[MaxLengthValidator(2000), url_validator])
-    request = models.TextField(
+    # The call log contains the URL, headers and payload of the request, so it's
+    # encrypted like the webhook itself.
+    called_url = EncryptedTextField(
+        validators=[MaxLengthValidator(2000), url_validator]
+    )
+    request = EncryptedTextField(
         null=True, help_text="A text copy of the request headers and body."
     )
-    response = models.TextField(
+    response = EncryptedTextField(
         null=True, help_text="A text copy of the response headers and body."
     )
     response_status = models.IntegerField(
         null=True, help_text="The HTTP response status code."
     )
-    error = models.TextField(
+    error = EncryptedTextField(
         null=True, help_text="An internal error reflecting what went wrong."
     )
 
