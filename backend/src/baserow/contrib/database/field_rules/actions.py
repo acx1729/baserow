@@ -90,7 +90,7 @@ class CreateFieldRuleActionType(UndoableActionType):
     ):
         table = TableHandler().get_table(params.table_id)
         handler = FieldRuleHandler(table, user)
-        rule = handler.get_rule(params.id)
+        rule = handler.get_rule(params.rule_id)
         handler.delete_rule(rule=rule)
 
     @classmethod
@@ -99,7 +99,7 @@ class CreateFieldRuleActionType(UndoableActionType):
         handler = FieldRuleHandler(table, user)
         handler.create_rule(
             rule_type_name=params.rule_type,
-            in_data=params.rule,
+            in_data=params.rule_data,
             primary_key_value=params.rule_id,
         )
 
@@ -249,7 +249,7 @@ class DeleteFieldRuleActionType(UndoableActionType):
         handler = FieldRuleHandler(table, user)
         handler.create_rule(
             rule_type_name=params.rule_type,
-            in_data=params.rule,
+            in_data=params.rule_before,
             primary_key_value=params.rule_id,
         )
 
@@ -257,5 +257,5 @@ class DeleteFieldRuleActionType(UndoableActionType):
     def redo(cls, user: AbstractUser, params: Params, action_being_redone: Action):
         table = TableHandler().get_table(params.table_id)
         handler = FieldRuleHandler(table, user)
-        rule = handler.get_rule(params.id)
+        rule = handler.get_rule(params.rule_id)
         handler.delete_rule(rule=rule)
