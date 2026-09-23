@@ -80,6 +80,31 @@ def test_can_undo_updating_workspace(data_fixture, django_assert_num_queries):
 
 @pytest.mark.django_db
 @pytest.mark.undo_redo
+def test_can_undo_redo_updating_workspace(data_fixture):
+    session_id = "session-id"
+    user = data_fixture.create_user(session_id=session_id)
+    workspace = (
+        action_type_registry.get_by_type(CreateWorkspaceActionType)
+        .do(user, "test")
+        .workspace
+    )
+    action_type_registry.get_by_type(UpdateWorkspaceActionType).do(
+        user, cast(WorkspaceForUpdate, workspace), "new name"
+    )
+
+    [undone] = ActionHandler.undo(user, [RootActionScopeType.value()], session_id)
+    workspace.refresh_from_db()
+    assert undone.error is None
+    assert workspace.name == "test"
+
+    [redone] = ActionHandler.redo(user, [RootActionScopeType.value()], session_id)
+    workspace.refresh_from_db()
+    assert redone.error is None
+    assert workspace.name == "new name"
+
+
+@pytest.mark.django_db
+@pytest.mark.undo_redo
 def test_can_undo_ordering_workspace(data_fixture, django_assert_num_queries):
     session_id = "session-id"
     user = data_fixture.create_user(session_id=session_id)

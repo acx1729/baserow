@@ -1,6 +1,7 @@
 from typing import Any
 
 from django.contrib.auth.models import AbstractUser
+from django.contrib.contenttypes.models import ContentType
 from django.db import connection, models
 from django.db.models import Q
 from django.dispatch import Signal
@@ -222,8 +223,9 @@ class FieldRuleHandler:
         model_class = rule_type.model_class
 
         # Those fields are set explicitly below, so we don't want them in
-        # rule payload.
-        for k in ("id", "table_id", "is_valid", "error_text"):
+        # rule payload. The payload can be the `to_dict` of a deleted rule that is
+        # being restored.
+        for k in ("id", "table_id", "type", "is_valid", "error_text"):
             in_data.pop(k, None)
 
         rule_data = rule_type.prepare_values_for_create(self.table, in_data)
@@ -235,6 +237,8 @@ class FieldRuleHandler:
 
         field_rule = model_class.objects.create(
             pk=primary_key_value,
+            # Only set automatically when the primary key isn't given.
+            content_type=ContentType.objects.get_for_model(model_class),
             table=self.table,
             is_active=is_active,
             is_valid=True,

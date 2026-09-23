@@ -237,7 +237,7 @@ class UpdateWorkspaceActionType(UndoableActionType):
         CoreHandler().update_workspace(
             user,
             workspace,
-            name=params.new_workspace_name,
+            name=params.workspace_name,
         )
 
 
